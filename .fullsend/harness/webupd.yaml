@@ -1,9 +1,9 @@
 agent: agents/webupd.md
 image: ghcr.io/openkaiden/kaiden-fullsend-image@sha256:752de42626946c37a453a0b0ddd2effd7a2a4cecda86595586097d14b1c21635
-policy: policies/base.yaml
+policy: https://raw.githubusercontent.com/fullsend-ai/agents/ec2f8a5b4369b844323ee1ee87c1d4a599a42817/policies/base.yaml#sha256=3ed634401d87a1327fffe5e266272d930321484ce8a91dfa5fe447d4f2e00470
 openshell:
   profiles:
-    - profiles/fullsend-vertex-ai.yaml
+    - https://raw.githubusercontent.com/fullsend-ai/agents/ec2f8a5b4369b844323ee1ee87c1d4a599a42817/profiles/fullsend-vertex-ai.yaml#sha256=71ea4699ec497d4b9592220adf7588019eb8445dbc77af8e0e6767e68dcb5585
 providers:
   - vertex-ai
 role: webupd
