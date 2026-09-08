@@ -34,7 +34,8 @@ export async function expectDefaultModelInCodingAgents(
   agent: CodingAgent,
   modelLabel: string,
 ): Promise<void> {
-  const codingAgentsPage = await navigationBar.navigateToCodingAgentsPage();
+  const settingsPage = await navigationBar.navigateToSettingsPage();
+  const codingAgentsPage = await settingsPage.openCodingAgents();
   await codingAgentsPage.selectAgent(agent);
   await codingAgentsPage.expectDefaultModelSelected(modelLabel);
 }

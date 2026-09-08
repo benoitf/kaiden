@@ -20,6 +20,7 @@ import { expect, type Locator, type Page } from '@playwright/test';
 
 import type { ResourceId } from '/@/model/core/types';
 import { PROVIDERS, TIMEOUTS } from '/@/model/core/types';
+import { SettingsCodingAgentsPage } from '/@/model/pages/settings-coding-agents-tab-page';
 
 import { BasePage } from './base-page';
 import { SettingsCliPage } from './settings-cli-tab-page';
@@ -31,6 +32,7 @@ export class SettingsPage extends BasePage {
   readonly resourcesTab: Locator;
   readonly cliTab: Locator;
   readonly proxyTab: Locator;
+  readonly codingAgentsTab: Locator;
   readonly preferencesTab: Locator;
   private readonly tabs: Locator[];
 
@@ -39,8 +41,9 @@ export class SettingsPage extends BasePage {
     this.resourcesTab = page.getByRole('link', { name: 'Resources' });
     this.cliTab = page.getByRole('link', { name: 'CLI' });
     this.proxyTab = page.getByRole('link', { name: 'Proxy' });
+    this.codingAgentsTab = page.getByRole('link', { name: 'Coding agents' });
     this.preferencesTab = page.getByRole('link', { name: 'Preferences' });
-    this.tabs = [this.resourcesTab, this.cliTab, this.proxyTab, this.preferencesTab];
+    this.tabs = [this.resourcesTab, this.cliTab, this.proxyTab, this.codingAgentsTab, this.preferencesTab];
   }
 
   async isCurrentPage(): Promise<boolean> {
@@ -51,6 +54,7 @@ export class SettingsPage extends BasePage {
     await expect(this.resourcesTab).toBeVisible({ timeout: TIMEOUTS.SHORT });
     await expect(this.cliTab).toBeVisible({ timeout: TIMEOUTS.SHORT });
     await expect(this.proxyTab).toBeVisible({ timeout: TIMEOUTS.SHORT });
+    await expect(this.codingAgentsTab).toBeVisible({ timeout: TIMEOUTS.SHORT });
     await expect(this.preferencesTab).toBeVisible({ timeout: TIMEOUTS.SHORT });
   }
 
@@ -68,6 +72,10 @@ export class SettingsPage extends BasePage {
 
   async openPreferences(): Promise<SettingsPreferencesPage> {
     return this.openTab(this.preferencesTab, SettingsPreferencesPage);
+  }
+
+  async openCodingAgents(): Promise<SettingsCodingAgentsPage> {
+    return this.openTab(this.codingAgentsTab, SettingsCodingAgentsPage);
   }
 
   getAllTabs(): Locator[] {
