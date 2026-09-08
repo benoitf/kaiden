@@ -142,6 +142,28 @@ const config = {
         );
       }
 
+      // include pre-downloaded MXC binary (Windows only)
+      if (context.electronPlatformName === 'win32') {
+        const mxcAssetsDir = path.join(
+          'extensions',
+          'openshell',
+          'assets',
+          'mxc',
+          `${context.electronPlatformName}-${openshellArch}`,
+        );
+        if (fs.existsSync(mxcAssetsDir)) {
+          context.packager.config.extraResources.push({
+            from: mxcAssetsDir,
+            to: 'mxc',
+            filter: ['!.mxc-version'],
+          });
+        } else {
+          throw new Error(
+            `OpenShell assets not found at ${mxcAssetsDir}. Run "pnpm --filter openshell download" (or "pnpm --filter openshell download:all") before packaging.`,
+          );
+        }
+      }
+
       // include pre-downloaded openshell-image-builder binary (not available on Windows)
       if (context.electronPlatformName !== 'win32') {
         const ibAssetsDir = path.join(
