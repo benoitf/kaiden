@@ -20,7 +20,7 @@ import { expect, type Locator, type Page } from '@playwright/test';
 
 import { BasePage } from './base-page';
 
-export class CodingAgentsPage extends BasePage {
+export class SettingsCodingAgentsPage extends BasePage {
   readonly agentNav: Locator;
   readonly detailHeading: Locator;
   readonly selectedModel: Locator;

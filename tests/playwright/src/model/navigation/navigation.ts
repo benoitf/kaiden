@@ -22,7 +22,6 @@ import { builtInExtensions, ExtensionStatus } from '/@/model/core/types';
 import { AgentWorkspacesPage } from '/@/model/pages/agent-workspaces-page';
 import type { BasePage } from '/@/model/pages/base-page';
 import { ChatPage } from '/@/model/pages/chat-page';
-import { CodingAgentsPage } from '/@/model/pages/coding-agents-page';
 import { ExtensionsPage } from '/@/model/pages/extensions-page';
 import { KnowledgePage } from '/@/model/pages/knowledge-page';
 import { McpPage } from '/@/model/pages/mcp-page';
@@ -38,7 +37,6 @@ export class NavigationBar {
   readonly knowledgesLink: Locator;
   readonly extensionsLink: Locator;
   readonly workspacesLink: Locator;
-  readonly codingAgentsLink: Locator;
   readonly settingsLink: Locator;
   private readonly links: Locator[];
 
@@ -51,7 +49,6 @@ export class NavigationBar {
     this.knowledgesLink = this.navigationLocator.getByRole('link', { name: 'Knowledges', exact: true });
     this.extensionsLink = this.navigationLocator.getByRole('link', { name: 'Extensions', exact: true });
     this.workspacesLink = this.navigationLocator.getByRole('link', { name: 'Workspaces', exact: true });
-    this.codingAgentsLink = this.navigationLocator.getByRole('link', { name: 'Coding agents', exact: true });
     this.settingsLink = this.navigationLocator.getByRole('link', { name: 'Settings', exact: true });
     this.links = [
       this.chatLink,
@@ -60,7 +57,6 @@ export class NavigationBar {
       this.knowledgesLink,
       this.extensionsLink,
       this.workspacesLink,
-      this.codingAgentsLink,
       this.settingsLink,
     ];
   }
@@ -119,10 +115,6 @@ export class NavigationBar {
 
   async navigateToWorkspacesPage(): Promise<AgentWorkspacesPage> {
     return this.navigateTo(this.workspacesLink, AgentWorkspacesPage);
-  }
-
-  async navigateToCodingAgentsPage(): Promise<CodingAgentsPage> {
-    return this.navigateTo(this.codingAgentsLink, CodingAgentsPage);
   }
 
   async navigateToSettingsPage(): Promise<SettingsPage> {
