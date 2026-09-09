@@ -1,5 +1,5 @@
 <script lang="ts">
-import { faPlus } from '@fortawesome/free-solid-svg-icons';
+import { faPlus, faTrash } from '@fortawesome/free-solid-svg-icons';
 import {
   Button,
   EmptyScreen,
@@ -12,6 +12,7 @@ import {
   TableRow,
 } from '@podman-desktop/ui-svelte';
 
+import { withBulkConfirmation } from '/@/lib/actions/BulkActions';
 import NotificationsBox from '/@/lib/dashboard/NotificationsBox.svelte';
 import GatewayFilterDropdown from '/@/lib/gateways/GatewayFilterDropdown.svelte';
 import NoLogIcon from '/@/lib/ui/NoLogIcon.svelte';
@@ -53,11 +54,38 @@ function clearGatewayFilter(): void {
   gatewayFilter = '';
 }
 
+let selectedItemsNumber: number = $state(0);
+let bulkDeleteInProgress = $state(false);
+
+async function deleteSelectedSandboxes(): Promise<void> {
+  const selectedSandboxes = filteredSandboxes.filter(s => s.selected);
+  if (selectedSandboxes.length === 0) return;
+
+  bulkDeleteInProgress = true;
+  await Promise.all(
+    selectedSandboxes.map(async sandbox => {
+      try {
+        await window.deleteOpenshellSandbox(sandbox.name, sandbox.gatewayName);
+      } catch (error) {
+        console.error(`error while removing workspace ${sandbox.name}`, error);
+      }
+    }),
+  );
+  bulkDeleteInProgress = false;
+}
+
 const filteredSandboxes: SandboxSelectable[] = $derived(
   $filteredOpenshellSandboxes.map(sandbox => ({ ...sandbox, selected: false })),
 );
 
-const sandboxRow = new TableRow<SandboxSelectable>({});
+const sandboxRow = new TableRow<SandboxSelectable>({
+  selectable: (sandbox): boolean => sandbox.phase !== 'Deleting',
+  disabledText: 'Workspace is being deleted',
+});
+
+function key(sandbox: SandboxSelectable): string {
+  return `${sandbox.gatewayName}:${sandbox.id}`;
+}
 
 const sandboxNameColumn = new TableColumn<SandboxSelectable>('Workspace', {
   width: '3fr',
@@ -115,11 +143,23 @@ const sandboxColumns = [
       <NotificationsBox />
       <div class="px-5 pt-4 pb-4">
         <AgentWorkspaceStatCards sandboxes={$allOpenshellSandboxes} />
-        <div class="flex flex-row items-center gap-3">
+        <div class="flex flex-row items-center gap-3 min-h-9">
           <div class="w-72">
             <SearchInput bind:searchTerm={searchTerm} title="Agentic Workspaces" />
           </div>
           <GatewayFilterDropdown bind:value={gatewayFilter} />
+          {#if selectedItemsNumber > 0}
+          <Button
+            onclick={(): void =>
+                withBulkConfirmation(
+                  deleteSelectedSandboxes,
+                  `delete ${selectedItemsNumber} workspace${selectedItemsNumber > 1 ? 's' : ''}`,
+                )}
+            title="Delete {selectedItemsNumber} selected items"
+            inProgress={bulkDeleteInProgress}
+            icon={faTrash} />
+          <span>On {selectedItemsNumber} selected items.</span>
+          {/if}
         </div>
       </div>
 
@@ -145,10 +185,12 @@ const sandboxColumns = [
             <div class="flex min-w-full">
               <Table
                 kind="openshell-workspaces"
+                bind:selectedItemsNumber={selectedItemsNumber}
                 data={filteredSandboxes}
                 columns={sandboxColumns}
                 row={sandboxRow}
                 defaultSortColumn="Workspace"
+                key={key}
               />
             </div>
           </div>
