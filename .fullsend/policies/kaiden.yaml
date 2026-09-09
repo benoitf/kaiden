@@ -80,6 +80,12 @@ network_policies:
         allow_encoded_slash: true
         rules:
           - allow: { method: GET, path: /** }
+      - host: ghcr.io
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow: { method: GET, path: /** }
     binaries:
       - path: "**/node"
 
