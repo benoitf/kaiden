@@ -48,8 +48,8 @@ const workspace: GatewaySandboxes = {
 vi.mock(import('tinro'));
 
 const routerStore = writable({
-  path: '/agent-workspaces/ws-1/terminal',
-  url: '/agent-workspaces/ws-1/terminal',
+  path: '/agent-workspaces/ws-1/terminal-agent',
+  url: '/agent-workspaces/ws-1/terminal-agent',
   from: '/',
   query: {} as Record<string, string>,
   hash: '',
@@ -114,6 +114,24 @@ test('calls shellInAgentWorkspace when workspace is running', async () => {
     expect.any(Function),
     expect.any(Function),
     expect.any(Function),
+    'agent',
+  );
+});
+
+test('requests a plain shell when kind is shell', async () => {
+  openshellSandboxes.set([getWorkspace('Ready')]);
+  shellInAgentWorkspaceMock.mockResolvedValue(42);
+
+  render(AgentWorkspaceTerminal, { workspaceId: 'ws-1', kind: 'shell', screenReaderMode: true });
+
+  await waitFor(() =>
+    expect(shellInAgentWorkspaceMock).toHaveBeenCalledWith(
+      'ws-1',
+      expect.any(Function),
+      expect.any(Function),
+      expect.any(Function),
+      'shell',
+    ),
   );
 });
 
