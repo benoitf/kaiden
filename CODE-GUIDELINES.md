@@ -269,7 +269,7 @@ test('...', () => {
 
 System modules (`node:fs`, etc) are mocked, so unit tests run in isolation from the system. Internal modules are either mocked entirely or used with their real implementation.
 
-Do not use `vi.spyOn`, `vi.hoisted` or hand-written mock factories when automocking suffices. If you need to mock only one function of a module, it is a sign that the function belongs in an injectable class: inject it and mock its method with `vi.mocked(MyClass.prototype.myMethod)`. To test a protected method, declare a `TestXxx extends Xxx` subclass in the spec instead of exporting internals.
+Do not use `vi.spyOn`, `vi.hoisted` or hand-written mock factories when automocking suffices. If you need to mock only one function of a module, it is a sign that the function belongs in an injectable class: inject a test double with a `vi.fn()` method. Use `vi.mocked(MyClass.prototype.myMethod)` only when that method is already mocked. To test a protected method, declare a `TestXxx extends Xxx` subclass in the spec instead of exporting internals.
 
 #### Mock a complete module
 
