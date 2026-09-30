@@ -244,7 +244,7 @@ These rules come from recurring maintainer review feedback. Detailed patterns an
 
 ### Scope and commits
 
-- Change only what the task needs: no drive-by reformatting, import reordering, renames, or edits to unrelated files/config. One concern per PR (or commit); prerequisite refactors land separately
+- Stay within the scope of the GitHub issue linked to the task. Change only what it needs: no drive-by reformatting, import reordering, renames, or edits to unrelated files/config. One concern per PR (or commit); prerequisite refactors land separately
 - Don't change existing tests and implementation in the same change unless the test asserts the behaviour being changed
 - Before removing or changing existing behaviour, check `git log`/`git blame` for why it was introduced
 - Commit titles use semantic types with a scope (`fix(renderer): ...`, `feat(api): ...`) and are signed off (`git commit -s`)
