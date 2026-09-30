@@ -254,7 +254,7 @@ These rules come from recurring maintainer review feedback. Detailed patterns an
 ### TypeScript
 
 - No `!` non-null assertions, no `as X` / `as unknown as X` without a runtime check, no `any`, no `null` (use `undefined`), no `eslint-disable` comments
-- Optional members as `name?: T`; `??` over `||` for defaults; `toSorted()` over `sort()`
+- Optional members as `name?: T`; `??` over `||` for defaults; use `toSorted()` when a copy is intended and `sort()` when in-place mutation is required
 - No synchronous APIs (`execSync`, `fs.*Sync`) in async code; no `void promise`; `async/await` over `.then` chains
 - Never swallow errors: every `catch` logs with identifying context; cleanup that must always run goes in `finally`
 - Node built-ins use the `node:` prefix; all imports at the top of the file
