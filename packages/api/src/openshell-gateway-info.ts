@@ -113,6 +113,8 @@ export const WORKSPACE_LABEL = 'ai.openkaiden.kaiden.workspace';
 export const AGENT_LABEL = 'ai.openkaiden.kaiden.agent';
 export const SECRET_LABEL = 'ai.openkaiden.kaiden.secret';
 export const PROFILE_LABEL = 'ai.openkaiden.kaiden.profile';
+/** Prefix of the labels holding the selected addon ids, one label per addon: `<prefix>.<index>`. */
+export const ADDON_LABEL = 'ai.openkaiden.kaiden.addon';
 
 export function decodeWorkspaceLabels(labels: Record<string, string>): string | undefined {
   let encoded: string;

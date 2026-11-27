@@ -48,6 +48,7 @@ import type { ApiSenderType } from '/@api/api-sender/api-sender-type.js';
 import type { IConfigurationRegistry } from '/@api/configuration/models.js';
 import type { GatewayInfo } from '/@api/openshell-gateway-info.js';
 import {
+  ADDON_LABEL,
   AGENT_LABEL,
   decodeWorkspaceLabels,
   MIN_GATEWAY_VERSION,
@@ -1539,6 +1540,18 @@ describe('create – no-folder workspace', () => {
 
     const callArg = vi.mocked(sdkSandbox.create).mock.calls[0]![0]!;
     expect(callArg.labels).toEqual({ gateway: 'kaiden', [AGENT_LABEL]: 'claude' });
+  });
+
+  test('adds one ADDON_LABEL per selected addon', async () => {
+    await manager.create({ ...noFolderOptions, addons: ['kaiden.node', 'acme.rust'] });
+
+    const callArg = vi.mocked(sdkSandbox.create).mock.calls[0]![0]!;
+    expect(callArg.labels).toEqual({
+      gateway: 'kaiden',
+      [AGENT_LABEL]: 'claude',
+      [`${ADDON_LABEL}.0`]: 'kaiden.node',
+      [`${ADDON_LABEL}.1`]: 'acme.rust',
+    });
   });
 
   test('writes config to global directory scoped by gateway and name', async () => {

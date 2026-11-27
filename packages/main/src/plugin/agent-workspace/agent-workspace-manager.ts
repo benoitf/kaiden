@@ -67,6 +67,7 @@ import type {
   SandboxInfo,
 } from '/@api/openshell-gateway-info.js';
 import {
+  ADDON_LABEL,
   AGENT_LABEL,
   decodeWorkspaceLabels,
   MIN_GATEWAY_VERSION,
@@ -333,6 +334,7 @@ export class AgentWorkspaceManager implements Disposable {
         [AGENT_LABEL]: options.agent,
         ...(secretResult?.secretName ? { [SECRET_LABEL]: secretResult.secretName } : {}),
         ...(secretResult?.clonedProfile ? { [PROFILE_LABEL]: secretResult.clonedProfile } : {}),
+        ...Object.fromEntries((options.addons ?? []).map((id, i) => [`${ADDON_LABEL}.${i}`, id])),
       },
       tty: true,
       rawSpec:

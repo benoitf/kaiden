@@ -111,4 +111,6 @@ export interface AgentWorkspaceCreateOptions {
   workspaceConfiguration?: AgentWorkspaceConfiguration;
   mounts?: AgentWorkspaceMount[];
   replaceConfig?: boolean;
+  /** Ids of the addons (`<publisher>.<name>`) selected for the workspace. Defaults to `undefined` (none). */
+  addons?: string[];
 }
