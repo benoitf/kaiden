@@ -278,16 +278,6 @@ export interface AgentModelSetupConfig {
   readonly localRuntimeFallback: boolean;
 }
 
-export const WIZARD_STEP = {
-  WORKSPACE: 'Workspace',
-  AGENT_MODEL: 'Agent & Model',
-  TOOLS_SECRETS: 'Tools & Secrets',
-  FILE_SYSTEM: 'File System',
-  NETWORKING: 'Networking',
-} as const;
-export const WIZARD_STEPS = Object.values(WIZARD_STEP);
-export type WizardStep = (typeof WIZARD_STEP)[keyof typeof WIZARD_STEP];
-
 export const FILE_ACCESS_LEVEL = {
   NO_HOST_ACCESS: 'No host filesystem access',
   CUSTOM_PATHS: 'Custom Paths',

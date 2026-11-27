@@ -34,7 +34,6 @@ import {
   PROVIDERS,
   type ResourceId,
   TIMEOUTS,
-  WIZARD_STEP,
   WORKSPACE_STATUS,
   type WorkspaceCustomMount,
 } from '/@/model/core/types';
@@ -65,7 +64,7 @@ export interface WorkspaceLifecycleConfig {
     prompt: string;
     expectedResponse: RegExp;
   };
-  /** When set, configures filesystem/network wizard steps and skips stat-card assertions. */
+  /** When set, configures the Folders and Reachable hostnames cards and skips stat-card assertions. */
   sandbox?: WorkspaceSandboxOptions;
   /** When false, caller owns create/delete (sandbox matrix agent scope). Default true. */
   manageResource?: boolean;
@@ -195,11 +194,11 @@ export function registerWorkspaceLifecycleTests(
 
     const createPage = await agentWorkspacesPage.openCreatePage();
 
-    await createPage.sessionNameInput.fill(config.workspaceName);
     if (!config.noProjectFolder) {
-      await createPage.workingDirInput.fill(workingDir!);
+      await createPage.fillWorkingDir(workingDir!);
     }
-    await createPage.continueToStep(WIZARD_STEP.AGENT_MODEL);
+    // after the folder: picking a folder derives the name from it
+    await createPage.fillWorkspaceName(config.workspaceName);
 
     await createPage.selectAgent(config.agent);
     await createPage.waitForModelCatalog();
@@ -223,9 +222,6 @@ export function registerWorkspaceLifecycleTests(
       await createPage.startWorkspace();
       await agentWorkspacesPage.expectWorkspaceCreated(config.workspaceName);
     } else {
-      await createPage.continueToStep(WIZARD_STEP.TOOLS_SECRETS);
-      await createPage.continueToStep(WIZARD_STEP.FILE_SYSTEM);
-      await createPage.continueToStep(WIZARD_STEP.NETWORKING);
       await createPage.startWorkspace();
       await expect(agentWorkspacesPage.heading).toBeVisible({ timeout: TIMEOUTS.WORKSPACE_READY });
     }

@@ -17,7 +17,7 @@
  ***********************************************************************/
 
 import { bindGuidedSetupSession, expect, test } from '/@/fixtures/guided-setup-fixture';
-import { CODING_AGENT, ENABLED_CODING_AGENTS, INFERENCE_MODELS, WIZARD_STEP } from '/@/model/core/types';
+import { CODING_AGENT, ENABLED_CODING_AGENTS, INFERENCE_MODELS } from '/@/model/core/types';
 import { NavigationBar } from '/@/model/navigation/navigation';
 import { resolveAgentModelConnectionFor } from '/@/model/pages/agent-model-setup';
 import { AgentWorkspacesPage } from '/@/model/pages/agent-workspaces-page';
@@ -103,8 +103,6 @@ test.describe('Guided setup smoke', { tag: '@smoke' }, () => {
         const agentWorkspacesPage = new AgentWorkspacesPage(session.page!);
         await navigationBar.navigateToWorkspacesPage();
         const createPage = await agentWorkspacesPage.openCreatePage();
-        await createPage.workingDirInput.fill('/tmp/guide-skip-test');
-        await createPage.navigateToStep(WIZARD_STEP.AGENT_MODEL);
         await createPage.expectAgentSelected(CODING_AGENT.OPENCODE);
         expect(await createPage.getSelectedModelLabel()).toBe(modelLabels[0]);
       });

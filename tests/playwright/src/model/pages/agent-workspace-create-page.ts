@@ -25,9 +25,6 @@ import {
   NETWORK_ACCESS_LEVEL,
   type NetworkAccessLevel,
   TIMEOUTS,
-  WIZARD_STEP,
-  WIZARD_STEPS,
-  type WizardStep,
   type WorkspaceCustomMount,
 } from '/@/model/core/types';
 
@@ -48,54 +45,65 @@ export {
   type ResolvedAgentModelSetup,
 } from './agent-model-setup';
 
+export const BLUEPRINT_CARD = {
+  MODEL: 'Model',
+  AGENT: 'Agent',
+  ADDONS: 'Add-ons',
+  BASE_IMAGE: 'Base image',
+  MCP_SERVERS: 'MCP servers',
+  FOLDERS: 'Folders',
+  HOSTNAMES: 'Reachable hostnames',
+  CREDENTIALS: 'Credentials',
+} as const;
+export const BLUEPRINT_CARDS = Object.values(BLUEPRINT_CARD);
+export type BlueprintCard = (typeof BLUEPRINT_CARD)[keyof typeof BLUEPRINT_CARD];
+
+export const CREATE_VIEW = {
+  BLUEPRINT: 'Blueprint',
+  LIST: 'List',
+  YAML: 'YAML',
+} as const;
+export type CreateView = (typeof CREATE_VIEW)[keyof typeof CREATE_VIEW];
+
 export class AgentWorkspaceCreatePage extends BasePage {
   readonly heading: Locator;
+  readonly editNameButton: Locator;
   readonly sessionNameInput: Locator;
   readonly workingDirInput: Locator;
   readonly browseButton: Locator;
   readonly descriptionToggle: Locator;
   readonly descriptionInput: Locator;
+  readonly viewSelector: Locator;
   readonly agentSelector: Locator;
-  readonly toolsSummary: Locator;
-  readonly customizeExpandable: Locator;
   readonly mcpServersPanel: Locator;
   readonly fileAccessHeading: Locator;
   readonly firstCustomPathInput: Locator;
   readonly addPathButton: Locator;
-  readonly wizardStepper: Locator;
+  readonly addHostInput: Locator;
   readonly cancelButton: Locator;
-  readonly continueButton: Locator;
-  readonly backButton: Locator;
   readonly submitButton: Locator;
-  readonly useDefaultsButton: Locator;
   readonly noModelsGate: Locator;
   readonly providerPicker: Locator;
   readonly inlineConnectionForm: Locator;
 
   constructor(page: Page) {
     super(page);
-    this.heading = this.page.getByRole('heading', { name: 'Create Coding Agent Workspace' });
-    this.sessionNameInput = this.page.getByPlaceholder('e.g., front-refactor');
+    this.heading = this.page.getByRole('heading', { name: 'New workspace', exact: true });
+    this.editNameButton = this.page.getByRole('button', { name: 'Edit workspace name', exact: true });
+    this.sessionNameInput = this.page.getByRole('textbox', { name: 'Workspace name', exact: true });
     this.workingDirInput = this.page.getByPlaceholder('/path/to/project');
     this.browseButton = this.page.getByLabel('Browse for folder');
-    this.descriptionToggle = this.page.getByRole('button', { name: /Description/ });
+    this.descriptionToggle = this.page.getByRole('button', { name: /^(Add a|Hide) description$/ });
     this.descriptionInput = this.page.getByRole('textbox', { name: 'Description' });
+    this.viewSelector = this.page.getByRole('radiogroup', { name: 'View' });
     this.agentSelector = this.page.getByRole('listbox', { name: 'Coding agent' });
-    this.toolsSummary = this.page.getByText(/Everything available is included|Expand.*Customize/);
-    this.customizeExpandable = this.page.getByText('Customize skills, MCP servers, vault, and knowledges');
     this.mcpServersPanel = this.page.getByText('MCP Servers', { exact: true });
     this.fileAccessHeading = this.page.getByText('File System Access');
     this.firstCustomPathInput = this.page.getByPlaceholder('/path/on/host').first();
     this.addPathButton = this.page.getByRole('button', { name: 'Add Another Mount' });
-    this.wizardStepper = this.page.getByLabel('Wizard progress');
-    this.cancelButton = this.page.getByRole('button', { name: 'Cancel' });
-    this.continueButton = this.page.getByRole('button', { name: 'Continue' });
-    this.backButton = this.page.getByRole('button', { name: 'Back', exact: true });
-    this.submitButton = this.page.getByRole('button', { name: 'Start Workspace' });
-    this.useDefaultsButton = this.page.getByRole('button', {
-      name: 'Use all defaults and create workspace',
-      exact: true,
-    });
+    this.addHostInput = this.page.getByRole('textbox', { name: 'Add hostname', exact: true });
+    this.cancelButton = this.page.getByRole('button', { name: 'Cancel', exact: true });
+    this.submitButton = this.page.getByRole('button', { name: 'Create workspace', exact: true });
     this.noModelsGate = this.page.getByTestId('no-models-create-connection');
     this.providerPicker = this.page.getByTestId('provider-picker');
     this.inlineConnectionForm = this.page.getByTestId('inline-connection-form');
@@ -103,57 +111,72 @@ export class AgentWorkspaceCreatePage extends BasePage {
 
   async waitForLoad(): Promise<void> {
     await expect(this.heading).toBeVisible({ timeout: TIMEOUTS.SHORT });
-    // The wizard draft store persists currentStepIndex across mounts, so
-    // re-opening the wizard may land on a non-first step. Reset to Workspace.
-    if (!(await this.workingDirInput.isVisible())) {
-      await this.getStepButton(WIZARD_STEP.WORKSPACE).click();
+    // The draft store persists the selected view across mounts: start from the Blueprint.
+    await this.selectView(CREATE_VIEW.BLUEPRINT);
+  }
+
+  getViewOption(view: CreateView): Locator {
+    return this.viewSelector.getByRole('radio', { name: view, exact: true });
+  }
+
+  async selectView(view: CreateView): Promise<void> {
+    const option = this.getViewOption(view);
+    if ((await option.getAttribute('aria-checked')) !== 'true') {
+      await option.click();
     }
-    await expect(this.workingDirInput).toBeVisible({ timeout: TIMEOUTS.SHORT });
+    await expect(option).toHaveAttribute('aria-checked', 'true');
   }
 
-  getStepButton(step: WizardStep): Locator {
-    return this.wizardStepper.getByLabel(`${step} step`);
+  getEditButton(card: BlueprintCard): Locator {
+    return this.page.getByRole('button', { name: `Edit ${card}`, exact: true });
   }
 
-  async expectStepActive(step: WizardStep): Promise<void> {
-    await expect(this.getStepButton(step)).toHaveAttribute('aria-current', 'step');
+  getEditorDialog(card: BlueprintCard): Locator {
+    return this.page.getByRole('dialog', { name: card, exact: true });
   }
 
-  async continueToStep(step: WizardStep): Promise<void> {
-    // Only the Workspace step's Continue button is gated on gateway availability, so restrict
-    // this diagnostic to that transition to avoid misattributing unrelated disabled-button
-    // causes on other steps. Wait for Continue first: a fresh app profile can show the
-    // no-gateway banner while the local gateway is still starting.
-    const leavesWorkspaceStep = WIZARD_STEPS[WIZARD_STEPS.indexOf(step) - 1] === WIZARD_STEP.WORKSPACE;
-    if (leavesWorkspaceStep) {
-      try {
-        await expect(this.continueButton).toBeEnabled({ timeout: TIMEOUTS.STANDARD });
-      } catch (error) {
-        await this.assertGatewayAvailable();
-        throw error;
-      }
-    } else {
-      await expect(this.continueButton).toBeEnabled();
+  getListSection(card: BlueprintCard): Locator {
+    return this.page.getByRole('region', { name: card, exact: true });
+  }
+
+  /** Makes the editor of a card visible (popover in Blueprint view, section in List view) and returns it. */
+  async openEditor(card: BlueprintCard): Promise<Locator> {
+    if ((await this.getViewOption(CREATE_VIEW.LIST).getAttribute('aria-checked')) === 'true') {
+      const section = this.getListSection(card);
+      await expect(section).toBeVisible();
+      return section;
     }
-    await this.continueButton.click();
-    await this.expectStepActive(step);
-  }
-
-  async backToStep(step: WizardStep): Promise<void> {
-    await expect(this.backButton).toBeVisible();
-    await this.backButton.click();
-    await this.expectStepActive(step);
-  }
-
-  async navigateToStep(step: WizardStep, agentModelSetup?: AgentModelSetup): Promise<void> {
-    const targetIndex = WIZARD_STEPS.indexOf(step);
-    for (let i = 0; i < targetIndex; i++) {
-      const currentStep = WIZARD_STEPS[i]!;
-      if (currentStep === WIZARD_STEP.AGENT_MODEL && agentModelSetup) {
-        await agentModelSetup(this);
-      }
-      await this.continueToStep(WIZARD_STEPS[i + 1]!);
+    const dialog = this.getEditorDialog(card);
+    if (!(await dialog.isVisible())) {
+      // another open popover may cover the Edit button
+      await this.closeEditors();
+      await this.getEditButton(card).click();
     }
+    await expect(dialog).toBeVisible();
+    return dialog;
+  }
+
+  /** Closes the open popover by clicking outside it (Escape would also leave the page). */
+  async closeEditors(): Promise<void> {
+    const dialogs = this.page.getByRole('dialog');
+    if ((await dialogs.count()) > 0) {
+      await this.heading.click();
+    }
+    await expect(dialogs).toHaveCount(0);
+  }
+
+  async fillWorkspaceName(name: string): Promise<void> {
+    if (!(await this.sessionNameInput.isVisible())) {
+      await this.editNameButton.click();
+    }
+    await this.sessionNameInput.fill(name);
+    await this.sessionNameInput.press('Enter');
+    await expect(this.editNameButton).toContainText(name);
+  }
+
+  async fillWorkingDir(path: string): Promise<void> {
+    await this.openEditor(BLUEPRINT_CARD.FOLDERS);
+    await this.workingDirInput.fill(path);
   }
 
   async fillDescription(desc: string): Promise<void> {
@@ -165,12 +188,11 @@ export class AgentWorkspaceCreatePage extends BasePage {
   }
 
   getAgentCard(agent: CodingAgent): Locator {
-    return this.agentSelector
-      .locator(`button[role="option"]`)
-      .filter({ has: this.page.getByText(agent, { exact: true }) });
+    return this.agentSelector.getByRole('option').filter({ has: this.page.getByText(agent, { exact: true }) });
   }
 
   async selectAgent(agent: CodingAgent): Promise<void> {
+    await this.openEditor(BLUEPRINT_CARD.AGENT);
     const card = this.getAgentCard(agent);
     if ((await card.getAttribute('aria-selected')) !== 'true') {
       await card.click();
@@ -179,10 +201,12 @@ export class AgentWorkspaceCreatePage extends BasePage {
   }
 
   async expectAgentSelected(agent: CodingAgent): Promise<void> {
+    await this.openEditor(BLUEPRINT_CARD.AGENT);
     await expect(this.getAgentCard(agent)).toHaveAttribute('aria-selected', 'true');
   }
 
   async getSelectedModelLabel(): Promise<string> {
+    await this.openEditor(BLUEPRINT_CARD.MODEL);
     const selected = this.page.getByTestId('selected-model');
     if (await selected.isVisible()) {
       const text = await selected.textContent();
@@ -195,14 +219,10 @@ export class AgentWorkspaceCreatePage extends BasePage {
   }
 
   async expectModelSelected(modelLabel: string): Promise<void> {
+    await this.openEditor(BLUEPRINT_CARD.MODEL);
     const row = this.page.getByTestId(`model-row-${modelLabel}`);
     await expect(row.locator('input[name="modelSelection"]')).toBeChecked();
     await expect(this.page.getByTestId('selected-model')).toHaveText(`Selected: ${modelLabel}`);
-  }
-
-  async expandCustomize(): Promise<void> {
-    await expect(this.customizeExpandable).toBeVisible();
-    await this.customizeExpandable.click();
   }
 
   getCardByName(name: string): Locator {
@@ -214,6 +234,7 @@ export class AgentWorkspaceCreatePage extends BasePage {
   }
 
   async selectFileAccess(level: FileAccessLevel): Promise<void> {
+    await this.openEditor(BLUEPRINT_CARD.FOLDERS);
     await this.getFileAccessOption(level).click();
     await expect(this.page.getByRole('radio', { name: `Use ${level}` })).toBeChecked();
   }
@@ -245,51 +266,52 @@ export class AgentWorkspaceCreatePage extends BasePage {
     await this.fillCustomMount(mount, index);
   }
 
-  getNetworkOption(level: NetworkAccessLevel): Locator {
-    return this.page.getByRole('radio', { name: `Use ${level}` });
+  getHostRemoveButton(host: string): Locator {
+    return this.page.getByRole('button', { name: `Remove ${host}`, exact: true });
   }
 
-  async selectNetwork(level: NetworkAccessLevel): Promise<void> {
-    const option = this.getNetworkOption(level);
-    await expect(option).toBeEnabled();
-    await option.click();
-    await expect(option).toBeChecked();
+  getReachableHost(host: string): Locator {
+    return this.page.getByRole('list', { name: 'Reachable hostnames' }).getByRole('listitem').filter({ hasText: host });
   }
 
-  getCustomHostInput(index: number): Locator {
-    return this.page.getByLabel(`Custom host ${index + 1}`);
+  async addHost(host: string): Promise<void> {
+    await this.openEditor(BLUEPRINT_CARD.HOSTNAMES);
+    await this.addHostInput.fill(host);
+    await this.addHostInput.press('Enter');
+    await expect(this.getReachableHost(host)).toBeVisible();
   }
 
-  async fillCustomHost(index: number, value: string): Promise<void> {
-    await this.getCustomHostInput(index).fill(value);
+  async removeHost(host: string): Promise<void> {
+    await this.openEditor(BLUEPRINT_CARD.HOSTNAMES);
+    await this.getHostRemoveButton(host).click();
+    await expect(this.getHostRemoveButton(host)).not.toBeVisible();
   }
 
-  async addCustomHost(): Promise<void> {
-    await this.page.getByRole('button', { name: 'Add Another Host' }).click();
+  /** Removes every removable host (registries and custom ones); only the model endpoint stays reachable. */
+  async removeAllHosts(): Promise<void> {
+    const editor = await this.openEditor(BLUEPRINT_CARD.HOSTNAMES);
+    const removeButtons = editor.getByRole('button', { name: /^Remove / });
+    while ((await removeButtons.count()) > 0) {
+      const before = await removeButtons.count();
+      await removeButtons.first().click();
+      await expect(removeButtons).toHaveCount(before - 1);
+    }
   }
 
+  /**
+   * The page has no network mode picker anymore: everything not listed in Reachable hostnames is blocked.
+   * Deny All maps to removing the default registry hosts, Developer Preset to keeping them.
+   */
   async configureNetworkingStep(
     network: NetworkAccessLevel,
     options?: { denyHosts?: string[]; additionalHosts?: string[] },
   ): Promise<void> {
-    await this.selectNetwork(network);
-
-    if (network === NETWORK_ACCESS_LEVEL.DENY_ALL && options?.denyHosts?.length) {
-      for (let index = 0; index < options.denyHosts.length; index++) {
-        if (index > 0) {
-          await this.addCustomHost();
-        }
-        await this.fillCustomHost(index, options.denyHosts[index]!);
-      }
+    const hosts = network === NETWORK_ACCESS_LEVEL.DENY_ALL ? options?.denyHosts : options?.additionalHosts;
+    if (network === NETWORK_ACCESS_LEVEL.DENY_ALL) {
+      await this.removeAllHosts();
     }
-
-    if (network === NETWORK_ACCESS_LEVEL.DEVELOPER_PRESET && options?.additionalHosts?.length) {
-      let hostIndex = await this.page.getByLabel(/^Custom host \d+$/).count();
-      for (const host of options.additionalHosts) {
-        await this.addCustomHost();
-        await this.fillCustomHost(hostIndex, host);
-        hostIndex++;
-      }
+    for (const host of hosts ?? []) {
+      await this.addHost(host);
     }
   }
 
@@ -316,10 +338,7 @@ export class AgentWorkspaceCreatePage extends BasePage {
     denyHosts?: string[];
     additionalHosts?: string[];
   }): Promise<void> {
-    await this.continueToStep(WIZARD_STEP.TOOLS_SECRETS);
-    await this.continueToStep(WIZARD_STEP.FILE_SYSTEM);
     await this.configureFileSystemStep(options.fileAccess, options.customMounts);
-    await this.continueToStep(WIZARD_STEP.NETWORKING);
     await this.configureNetworkingStep(options.network, {
       denyHosts: options.denyHosts,
       additionalHosts: options.additionalHosts,
@@ -332,18 +351,19 @@ export class AgentWorkspaceCreatePage extends BasePage {
   }
 
   async closeIfOpen(): Promise<void> {
-    if (await this.cancelButton.isVisible().catch(() => false)) {
+    if (await this.heading.isVisible().catch(() => false)) {
       await this.cancel();
     }
   }
 
-  async startWithDefaults(): Promise<void> {
-    await expect(this.useDefaultsButton).toBeEnabled();
-    await this.useDefaultsButton.click();
-  }
-
   async startWorkspace(): Promise<void> {
-    await expect(this.submitButton).toBeEnabled();
+    // Create workspace is disabled while no gateway is reachable: surface that cause explicitly.
+    try {
+      await expect(this.submitButton).toBeEnabled({ timeout: TIMEOUTS.STANDARD });
+    } catch (error) {
+      await this.assertGatewayAvailable();
+      throw error;
+    }
     await this.submitButton.click();
   }
 
@@ -352,6 +372,7 @@ export class AgentWorkspaceCreatePage extends BasePage {
   }
 
   async waitForModelCatalog(timeout: number = TIMEOUTS.DEFAULT): Promise<void> {
+    await this.openEditor(BLUEPRINT_CARD.MODEL);
     await expect
       .poll(async () => await this.getModelTableRows().count(), {
         timeout,
@@ -449,6 +470,7 @@ export class AgentWorkspaceCreatePage extends BasePage {
   }
 
   async ensureModelReady(setup: ResolvedAgentModelSetup): Promise<void> {
+    await this.openEditor(BLUEPRINT_CARD.MODEL);
     if (await this.isModelCatalogVisible()) {
       await this.selectDefaultModel();
     } else if (await this.noModelsGate.isVisible()) {
@@ -470,7 +492,6 @@ export class AgentWorkspaceCreatePage extends BasePage {
       await this.waitForModelCatalog();
       await this.selectDefaultModel();
     }
-    await expect(this.continueButton).toBeEnabled();
   }
 
   async completeAvailableAgentModelStep(setup: ResolvedAgentModelSetup): Promise<void> {
@@ -479,7 +500,7 @@ export class AgentWorkspaceCreatePage extends BasePage {
   }
 
   async completeAgentModelStepIfNeeded(setup: AgentModelSetup): Promise<void> {
-    if (await this.continueButton.isDisabled()) {
+    if (await this.submitButton.isDisabled()) {
       await setup(this);
     }
   }

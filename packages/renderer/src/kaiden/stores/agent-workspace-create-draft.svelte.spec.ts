@@ -59,8 +59,9 @@ beforeEach(() => {
 });
 
 describe('wizard.draft initial state', () => {
-  test('should start with step index 0', () => {
-    expect(wizard.draft.currentStepIndex).toBe(0);
+  test('should start with the blueprint view and no addon', () => {
+    expect(wizard.draft.view).toBe('blueprint');
+    expect(wizard.draft.selectedAddonIds).toEqual([]);
   });
 
   test('should start with empty form fields', () => {
@@ -115,7 +116,7 @@ describe('applyProjectToDraft', () => {
     };
     wizard.draft.selectedModel = model;
     wizard.draft.customImage = 'custom:image';
-    wizard.draft.currentStepIndex = 3;
+    wizard.draft.view = 'list';
     wizard.draft.initialized = true;
     wizard.draft.selectedAgent = 'claude';
     wizard.draft.selectedGateway = 'gateway';
@@ -140,7 +141,7 @@ describe('applyProjectToDraft', () => {
       description: 'Keep description',
       selectedModel: model,
       customImage: 'custom:image',
-      currentStepIndex: 3,
+      view: 'list',
       initialized: true,
       projectOpen: false,
     });
@@ -182,7 +183,7 @@ describe('applyProjectToDraft', () => {
 });
 
 test('initializeDraftFromProject clears previous workspace details but preserves runtime choices', () => {
-  wizard.draft.currentStepIndex = 4;
+  wizard.draft.view = 'yaml';
   wizard.draft.initialized = true;
   wizard.draft.description = 'My workspace';
   wizard.draft.configAction = 'replace';
@@ -200,7 +201,7 @@ test('initializeDraftFromProject clears previous workspace details but preserves
   wizard.draft.selectedModel = model;
   initializeDraftFromProject({ ...project, filesystem: { mode: 'project', mounts: [] } });
   expect(wizard.draft).toMatchObject({
-    currentStepIndex: 0,
+    view: 'yaml',
     initialized: true,
     description: '',
     configAction: 'merge',
@@ -223,7 +224,7 @@ test('initializeDraftFromProject leaves a new draft ready for normal runtime ini
 
 describe('resetDraft', () => {
   test('should reset all fields to defaults', () => {
-    wizard.draft.currentStepIndex = 3;
+    wizard.draft.view = 'list';
     wizard.draft.sourcePath = '/some/path';
     wizard.draft.sessionName = 'my-session';
     wizard.draft.selectedAgent = 'claude';
@@ -232,7 +233,7 @@ describe('resetDraft', () => {
 
     resetDraft();
 
-    expect(wizard.draft.currentStepIndex).toBe(0);
+    expect(wizard.draft.view).toBe('blueprint');
     expect(wizard.draft.sourcePath).toBe('');
     expect(wizard.draft.sessionName).toBe('');
     expect(wizard.draft.selectedAgent).toBe('opencode');
@@ -244,11 +245,11 @@ describe('resetDraft', () => {
 describe('state persistence', () => {
   test('should retain values between accesses', () => {
     wizard.draft.sourcePath = '/home/user/project';
-    wizard.draft.currentStepIndex = 2;
+    wizard.draft.view = 'yaml';
     wizard.draft.selectedSkillIds = ['k8s', 'docker'];
 
     expect(wizard.draft.sourcePath).toBe('/home/user/project');
-    expect(wizard.draft.currentStepIndex).toBe(2);
+    expect(wizard.draft.view).toBe('yaml');
     expect(wizard.draft.selectedSkillIds).toEqual(['k8s', 'docker']);
   });
 });

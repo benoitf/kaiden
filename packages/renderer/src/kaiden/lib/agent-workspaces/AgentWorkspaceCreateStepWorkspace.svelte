@@ -1,104 +1,38 @@
 <script lang="ts">
 import { faChevronDown, faFolder, faFolderOpen, faInfoCircle, faRocket } from '@fortawesome/free-solid-svg-icons';
-import { Button, Dropdown, Input } from '@podman-desktop/ui-svelte';
+import { Button, Input } from '@podman-desktop/ui-svelte';
 import { Icon } from '@podman-desktop/ui-svelte/icons';
 
-import WorkspaceDescriptionField from '/@/kaiden/lib/agent-workspaces/WorkspaceDescriptionField.svelte';
-import { getSandboxNameValidationError } from '/@api/agent-workspace-info';
-import type { GatewayInfo } from '/@api/openshell-gateway-info';
 import type { WorkspaceProjectInfo } from '/@api/workspace-project-info';
 
 interface Props {
   sourcePath: string;
-  sessionName: string;
-  gateways?: GatewayInfo[];
-  selectedGateway?: string;
-  description: string;
-  nameManuallyEdited: boolean;
-  descriptionOpen: boolean;
   projectOpen: boolean;
   onBrowseSource: () => Promise<void>;
   configExists?: boolean;
   configAction?: 'merge' | 'replace';
-  onStartAsIs?: () => void;
-  startAsIsDisabled?: boolean;
   projects?: WorkspaceProjectInfo[];
   selectedProjectId?: string;
   onProjectSelect?: (project: WorkspaceProjectInfo | undefined) => void;
-  errors?: { name?: string };
 }
 
 let {
   sourcePath = $bindable(),
-  sessionName = $bindable(),
-  gateways = [],
-  selectedGateway = $bindable(''),
-  description = $bindable(),
-  nameManuallyEdited = $bindable(),
-  descriptionOpen = $bindable(),
   projectOpen = $bindable(),
   onBrowseSource,
   configExists = false,
   configAction = $bindable('merge'),
-  onStartAsIs,
-  startAsIsDisabled = false,
   projects = [],
   selectedProjectId,
   onProjectSelect,
-  errors = {},
 }: Props = $props();
-
-function markNameEdited(): void {
-  nameManuallyEdited = true;
-}
-
-function toggleDescription(): void {
-  descriptionOpen = !descriptionOpen;
-}
 
 function toggleProject(): void {
   projectOpen = !projectOpen;
 }
-
-function getEffectiveWorkspaceName(name: string, path: string): string {
-  const trimmed = name.trim();
-  if (trimmed) {
-    return trimmed;
-  }
-  const normalized = path.trim().replace(/[\\/]+$/, '');
-  return normalized.split(/[\\/]/).filter(Boolean).at(-1) ?? '';
-}
-
-let effectiveName = $derived(getEffectiveWorkspaceName(sessionName, sourcePath));
-let nameToValidate = $derived(nameManuallyEdited ? sessionName.trim() : effectiveName);
-let sessionNameError = $derived(
-  nameToValidate || nameManuallyEdited ? getSandboxNameValidationError(nameToValidate) : undefined,
-);
-let nameInputError = $derived(sessionNameError ?? errors?.name ?? '');
 </script>
 
-<h2 class="text-lg font-semibold text-[var(--pd-modal-text)] mb-1">Workspace</h2>
-<p class="text-sm text-[var(--pd-content-card-text)] opacity-60 mb-5">
-  Point to a local project folder, or leave it empty for a sandbox-only workspace.
-</p>
-
 <div class="space-y-4">
-  {#if gateways.length > 1}
-    <div>
-      <label for="workspace-gateway" class="block text-sm font-semibold text-[var(--pd-modal-text)] mb-2">
-        Gateway
-      </label>
-      <Dropdown id="workspace-gateway" name="workspace-gateway" class="w-full" bind:value={selectedGateway}>
-        {#each gateways as gateway (gateway.name)}
-          <option value={gateway.name}>{gateway.name} — {gateway.endpoint}</option>
-        {/each}
-      </Dropdown>
-      <p class="text-xs text-[var(--pd-content-card-text)] opacity-50 mt-1.5">
-        The workspace will be created on this OpenShell gateway.
-      </p>
-    </div>
-  {/if}
-
   <div>
     <label for="workspace-source" class="block text-sm font-semibold text-[var(--pd-modal-text)] mb-2">
       Project folder <span class="text-xs font-normal opacity-50">(optional)</span>
@@ -127,14 +61,6 @@ let nameInputError = $derived(sessionNameError ?? errors?.name ?? '');
       </div>
 
       <div class="flex flex-col gap-3 pl-6">
-        <Button type="secondary" disabled={startAsIsDisabled} onclick={onStartAsIs} aria-label="Start workspace as-is">
-          Start workspace as-is
-        </Button>
-
-        <p class="text-xs text-[var(--pd-content-card-text)] opacity-60">
-          Or continue below to configure a new workspace:
-        </p>
-
         <div class="flex items-center gap-4">
           <label class="flex items-center gap-1.5 text-sm text-[var(--pd-modal-text)] cursor-pointer">
             <input
@@ -160,47 +86,6 @@ let nameInputError = $derived(sessionNameError ?? errors?.name ?? '');
       </div>
     </div>
   {/if}
-
-  <div>
-    <label for="workspace-name" class="block text-sm font-semibold text-[var(--pd-modal-text)] mb-2">
-      Workspace name
-    </label>
-    <Input
-      id="workspace-name"
-      bind:value={sessionName}
-      placeholder="e.g., front-refactor"
-      class="w-full"
-      oninput={markNameEdited}
-      error={nameInputError}
-      aria-invalid={nameInputError !== ''}
-    />
-  </div>
-
-  <div class="rounded-xl border border-[var(--pd-content-card-border)]/85 bg-[var(--pd-content-card-bg)]/35 overflow-hidden">
-    <button
-      class="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-[var(--pd-modal-text)] hover:bg-[var(--pd-content-card-inset-bg)]/50 transition-colors cursor-pointer"
-      onclick={toggleDescription}>
-      <span>
-        Description <span class="text-xs font-normal opacity-50">(optional)</span>
-      </span>
-      <span
-        class="transition-transform duration-150 {descriptionOpen ? 'rotate-180' : ''}"
-        aria-hidden="true">
-        <Icon icon={faChevronDown} size="xs" />
-      </span>
-    </button>
-    {#if descriptionOpen}
-      <div class="px-4 pb-4">
-        <label for="workspace-description" class="block text-xs text-[var(--pd-content-card-text)] opacity-60 mb-1.5">
-          What should this workspace focus on?
-        </label>
-        <WorkspaceDescriptionField
-          bind:value={description}
-          placeholder="e.g. Debug the login timeout — reproduce issue #42 and propose a fix (optional, max 500 chars)"
-        />
-      </div>
-    {/if}
-  </div>
 
   {#if projects.length > 0}
     <div class="rounded-xl border border-[var(--pd-content-card-border)]/85 bg-[var(--pd-content-card-bg)]/35 overflow-hidden">

@@ -335,6 +335,7 @@ export class ColorRegistry {
     this.initTerminal();
     this.initProgressBar();
     this.initBadge();
+    this.initBlueprint();
     this.initCommon();
   }
 
@@ -1313,6 +1314,17 @@ export class ColorRegistry {
       dark: amber[400],
       light: amber[900],
     });
+  }
+
+  // layers and boundary of the workspace blueprint
+  protected initBlueprint(): void {
+    const blueprint = 'blueprint-';
+    this.registerColor(`${blueprint}boundary`, { dark: fuschia[400], light: fuschia[600] });
+    this.registerColor(`${blueprint}model`, { dark: fuschia[300], light: fuschia[600] });
+    this.registerColor(`${blueprint}agent`, { dark: red[300], light: red[600] });
+    this.registerColor(`${blueprint}addons`, { dark: amber[300], light: amber[600] });
+    this.registerColor(`${blueprint}image`, { dark: sky[300], light: sky[600] });
+    this.registerColor(`${blueprint}custom`, { dark: green[300], light: green[600] });
   }
 
   protected initStatusColors(): void {

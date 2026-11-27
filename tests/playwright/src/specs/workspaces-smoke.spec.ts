@@ -20,18 +20,14 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { expect, workerTest as test } from '/@/fixtures/electron-app';
-import {
-  CODING_AGENTS,
-  FILE_ACCESS_LEVEL,
-  FILE_ACCESS_LEVELS,
-  MCP_SERVERS,
-  WIZARD_STEP,
-  WIZARD_STEPS,
-} from '/@/model/core/types';
+import { CODING_AGENTS, FILE_ACCESS_LEVEL, FILE_ACCESS_LEVELS, MCP_SERVERS } from '/@/model/core/types';
 import {
   type AgentModelSetup,
   agentModelSetupSkipMessage,
   AgentWorkspaceCreatePage,
+  BLUEPRINT_CARD,
+  BLUEPRINT_CARDS,
+  CREATE_VIEW,
   resolveAgentModelConnection,
 } from '/@/model/pages/agent-workspace-create-page';
 import { waitForNavigationReady } from '/@/utils/app-ready';
@@ -83,7 +79,7 @@ test.describe('Workspaces page - initial state', { tag: '@smoke' }, () => {
   });
 });
 
-test.describe('Workspaces page - create wizard', { tag: '@smoke' }, () => {
+test.describe('Workspaces page - create page', { tag: '@smoke' }, () => {
   const testWorkspace = {
     name: 'test-workspace',
     workingDir: '/tmp/test-project',
@@ -96,42 +92,40 @@ test.describe('Workspaces page - create wizard', { tag: '@smoke' }, () => {
     await navigationBar.navigateToWorkspacesPage();
   });
 
-  test('[WKS-WIZ-01] Opens with form, stepper and Continue disabled', async ({ agentWorkspacesPage }) => {
+  test('[WKS-WIZ-01] Opens the blueprint with every card editable', async ({ agentWorkspacesPage }) => {
     const createPage = await agentWorkspacesPage.openCreatePage();
 
     await expect(createPage.heading).toBeVisible();
-    await expect(createPage.sessionNameInput).toBeVisible();
+    await expect(createPage.editNameButton).toBeVisible();
+    await expect(createPage.cancelButton).toBeEnabled();
+    await expect(createPage.submitButton).toBeVisible();
+    for (const card of BLUEPRINT_CARDS) {
+      await expect(createPage.getEditButton(card)).toBeVisible();
+    }
+
+    await createPage.openEditor(BLUEPRINT_CARD.FOLDERS);
     await expect(createPage.workingDirInput).toBeVisible();
     await expect(createPage.browseButton).toBeVisible();
-    await expect(createPage.continueButton).toBeDisabled();
-    await expect(createPage.cancelButton).toBeEnabled();
-    await expect(createPage.backButton).not.toBeVisible();
-
-    await expect(createPage.wizardStepper).toBeVisible();
-    for (const step of WIZARD_STEPS) {
-      await expect(createPage.getStepButton(step)).toBeVisible();
-    }
-    await createPage.expectStepActive(WIZARD_STEP.WORKSPACE);
+    await createPage.closeEditors();
   });
 
   test('[WKS-WIZ-02] Form fields retain filled values', async ({ agentWorkspacesPage }) => {
     const createPage = await agentWorkspacesPage.openCreatePage();
 
-    await createPage.sessionNameInput.fill(testWorkspace.name);
-    await createPage.workingDirInput.fill(testWorkspace.workingDir);
+    await createPage.fillWorkingDir(testWorkspace.workingDir);
+    await createPage.fillWorkspaceName(testWorkspace.name);
     await createPage.fillDescription(testWorkspace.description);
 
-    await expect(createPage.sessionNameInput).toHaveValue(testWorkspace.name);
-    await expect(createPage.workingDirInput).toHaveValue(testWorkspace.workingDir);
+    await expect(createPage.editNameButton).toContainText(testWorkspace.name);
     await expect(createPage.descriptionInput).toHaveValue(testWorkspace.description);
+    await createPage.openEditor(BLUEPRINT_CARD.FOLDERS);
+    await expect(createPage.workingDirInput).toHaveValue(testWorkspace.workingDir);
   });
 
   test('[WKS-WIZ-03] Displays all coding agents and allows selection', async ({ agentWorkspacesPage }) => {
     const createPage = await agentWorkspacesPage.openCreatePage();
 
-    await createPage.workingDirInput.fill('/tmp/test');
-    await createPage.navigateToStep(WIZARD_STEP.AGENT_MODEL);
-
+    await createPage.openEditor(BLUEPRINT_CARD.AGENT);
     await expect(createPage.agentSelector).toBeVisible();
     for (const agent of CODING_AGENTS) {
       await expect(createPage.getAgentCard(agent)).toBeVisible();
@@ -139,22 +133,20 @@ test.describe('Workspaces page - create wizard', { tag: '@smoke' }, () => {
     }
   });
 
-  test('[WKS-WIZ-04] Shows summary and collapsed Customize section', async ({ agentWorkspacesPage }) => {
+  test('[WKS-WIZ-04] List view renders every editor as a section', async ({ agentWorkspacesPage }) => {
     const createPage = await agentWorkspacesPage.openCreatePage();
 
-    await createPage.workingDirInput.fill('/tmp/test');
-    await createPage.navigateToStep(WIZARD_STEP.TOOLS_SECRETS, completeAgentModelStep);
-
-    await expect(createPage.toolsSummary).toBeVisible();
-    await expect(createPage.customizeExpandable).toBeVisible();
+    await createPage.selectView(CREATE_VIEW.LIST);
+    for (const card of BLUEPRINT_CARDS) {
+      await expect(createPage.getListSection(card)).toBeVisible();
+    }
+    await expect(createPage.getEditButton(BLUEPRINT_CARD.MODEL)).not.toBeVisible();
   });
 
   test('[WKS-WIZ-05] Shows custom path inputs only for Custom Paths access level', async ({ agentWorkspacesPage }) => {
     const createPage = await agentWorkspacesPage.openCreatePage();
 
-    await createPage.workingDirInput.fill(testWorkspace.workingDir);
-    await createPage.navigateToStep(WIZARD_STEP.FILE_SYSTEM, completeAgentModelStep);
-
+    await createPage.openEditor(BLUEPRINT_CARD.FOLDERS);
     await expect(createPage.fileAccessHeading).toBeVisible();
     for (const level of FILE_ACCESS_LEVELS) {
       await createPage.selectFileAccess(level);
@@ -168,105 +160,62 @@ test.describe('Workspaces page - create wizard', { tag: '@smoke' }, () => {
     }
   });
 
-  test('[WKS-WIZ-06] Replaces Continue with Start Workspace button on last step', async ({ agentWorkspacesPage }) => {
+  test('[WKS-WIZ-06] Adds and removes a reachable hostname', async ({ agentWorkspacesPage }) => {
     const createPage = await agentWorkspacesPage.openCreatePage();
 
-    await createPage.workingDirInput.fill(testWorkspace.workingDir);
-    await createPage.navigateToStep(WIZARD_STEP.NETWORKING, completeAgentModelStep);
-
-    await expect(createPage.submitButton).toBeVisible();
-    await expect(createPage.submitButton).toBeEnabled();
-    await expect(createPage.continueButton).not.toBeVisible();
-    await expect(createPage.backButton).toBeVisible();
+    await createPage.addHost('api.example.com');
+    await createPage.removeHost('api.example.com');
+    await expect(createPage.getReachableHost('api.example.com')).not.toBeVisible();
   });
 
-  test('[WKS-WIZ-07] Back returns to previous step', async ({ agentWorkspacesPage }) => {
-    const createPage = await agentWorkspacesPage.openCreatePage();
-
-    await createPage.workingDirInput.fill('/tmp/test');
-    await createPage.navigateToStep(WIZARD_STEP.AGENT_MODEL);
-    await createPage.expectStepActive(WIZARD_STEP.AGENT_MODEL);
-
-    await createPage.backToStep(WIZARD_STEP.WORKSPACE);
-    await expect(createPage.sessionNameInput).toBeVisible();
-  });
-
-  test('[WKS-WIZ-08] Cancel exits the wizard', async ({ agentWorkspacesPage }) => {
+  test('[WKS-WIZ-08] Cancel exits the create page', async ({ agentWorkspacesPage }) => {
     const createPage = await agentWorkspacesPage.openCreatePage();
     await createPage.cancel();
     await expect(agentWorkspacesPage.heading).toBeVisible();
   });
 
-  test('[WKS-WIZ-09] Use-defaults enables after folder is set and model is available', async ({
+  test('[WKS-WIZ-09] Create workspace enables once a folder is set and a model is available', async ({
     agentWorkspacesPage,
   }) => {
     const createPage = await agentWorkspacesPage.openCreatePage();
 
-    await expect(createPage.continueButton).toBeDisabled();
-    await expect(createPage.useDefaultsButton).toBeDisabled();
-
-    await createPage.workingDirInput.fill(testWorkspace.workingDir);
-
-    await expect(createPage.continueButton).toBeEnabled();
-
-    await createPage.continueToStep(WIZARD_STEP.AGENT_MODEL);
+    await createPage.fillWorkingDir(testWorkspace.workingDir);
     await createPage.completeAgentModelStepIfNeeded(completeAgentModelStep);
 
-    await expect(createPage.continueButton).toBeEnabled();
-    await createPage.backToStep(WIZARD_STEP.WORKSPACE);
-    await expect(createPage.useDefaultsButton).toBeEnabled();
+    await expect(createPage.submitButton).toBeEnabled();
   });
 
-  test('[WKS-WIZ-10] Completes all steps and Start Workspace is available', async ({ agentWorkspacesPage }) => {
+  test('[WKS-WIZ-10] Configures every card and Create workspace is available', async ({ agentWorkspacesPage }) => {
     const createPage = await agentWorkspacesPage.openCreatePage();
 
-    await createPage.sessionNameInput.fill(testWorkspace.name);
-    await createPage.workingDirInput.fill(testWorkspace.workingDir);
+    await createPage.fillWorkingDir(testWorkspace.workingDir);
+    await createPage.fillWorkspaceName(testWorkspace.name);
     await createPage.fillDescription(testWorkspace.description);
-    await createPage.navigateToStep(WIZARD_STEP.TOOLS_SECRETS, completeAgentModelStep);
-    await createPage.continueToStep(WIZARD_STEP.FILE_SYSTEM);
-
+    await completeAgentModelStep(createPage);
     await createPage.selectFileAccess(FILE_ACCESS_LEVEL.NO_HOST_ACCESS);
-    await createPage.continueToStep(WIZARD_STEP.NETWORKING);
+    await createPage.closeEditors();
 
-    await expect(createPage.submitButton).toBeVisible();
     await expect(createPage.submitButton).toBeEnabled();
   });
 });
 
-test.describe('Workspaces page - create wizard without project folder', { tag: '@smoke' }, () => {
+test.describe('Workspaces page - create without project folder', { tag: '@smoke' }, () => {
   test.beforeEach(async ({ page, navigationBar }) => {
     await waitForNavigationReady(page);
     await navigationBar.ensureExtensionsRunning();
     await navigationBar.navigateToWorkspacesPage();
   });
 
-  test('[WKS-NOFOLDER-01] Completes full wizard navigation without a project folder', async ({
+  test('[WKS-NOFOLDER-01] Create workspace enables with a name and a model but no folder', async ({
     agentWorkspacesPage,
   }) => {
     const createPage = await agentWorkspacesPage.openCreatePage();
 
-    await createPage.sessionNameInput.fill('no-folder-workspace');
-    await createPage.navigateToStep(WIZARD_STEP.NETWORKING, completeAgentModelStep);
+    await createPage.fillWorkspaceName('no-folder-workspace');
+    await completeAgentModelStep(createPage);
+    await createPage.closeEditors();
 
-    await expect(createPage.submitButton).toBeVisible();
     await expect(createPage.submitButton).toBeEnabled();
-    await expect(createPage.continueButton).not.toBeVisible();
-  });
-
-  test('[WKS-NOFOLDER-02] Use-defaults enables with session name and model but no folder', async ({
-    agentWorkspacesPage,
-  }) => {
-    const createPage = await agentWorkspacesPage.openCreatePage();
-
-    await expect(createPage.useDefaultsButton).toBeDisabled();
-
-    await createPage.sessionNameInput.fill('no-folder-defaults');
-    await createPage.continueToStep(WIZARD_STEP.AGENT_MODEL);
-    await createPage.completeAgentModelStepIfNeeded(completeAgentModelStep);
-
-    await createPage.backToStep(WIZARD_STEP.WORKSPACE);
-    await expect(createPage.useDefaultsButton).toBeEnabled();
   });
 });
 
@@ -290,16 +239,11 @@ test.describe('Workspaces page - skills integration', { tag: '@smoke' }, () => {
     await waitForNavigationReady(page);
   });
 
-  test('[WKS-SKILL-01] Imported skill appears in the Customize section', async ({
-    navigationBar,
-    agentWorkspacesPage,
-  }) => {
+  test('[WKS-SKILL-01] Imported skill appears in the Agent editor', async ({ navigationBar, agentWorkspacesPage }) => {
     await navigationBar.navigateToWorkspacesPage();
     const createPage = await agentWorkspacesPage.openCreatePage();
 
-    await createPage.workingDirInput.fill('/tmp/test');
-    await createPage.navigateToStep(WIZARD_STEP.TOOLS_SECRETS, completeAgentModelStep);
-    await createPage.expandCustomize();
+    await createPage.openEditor(BLUEPRINT_CARD.AGENT);
 
     await expect(createPage.getCardByName(TEST_SKILL.name)).toBeVisible();
   });
@@ -328,16 +272,14 @@ test.describe('Workspaces page - MCP integration', { tag: '@smoke' }, () => {
     await waitForNavigationReady(page);
   });
 
-  test('[WKS-MCP-01] Configured server appears in the Customize section', async ({
+  test('[WKS-MCP-01] Configured server appears in the MCP servers editor', async ({
     navigationBar,
     agentWorkspacesPage,
   }) => {
     await navigationBar.navigateToWorkspacesPage();
     const createPage = await agentWorkspacesPage.openCreatePage();
 
-    await createPage.workingDirInput.fill('/tmp/test');
-    await createPage.navigateToStep(WIZARD_STEP.TOOLS_SECRETS, completeAgentModelStep);
-    await createPage.expandCustomize();
+    await createPage.openEditor(BLUEPRINT_CARD.MCP_SERVERS);
 
     await expect(createPage.mcpServersPanel).toBeVisible();
     await expect(createPage.getCardByName(githubServer.serverName)).toBeVisible();

@@ -18,11 +18,14 @@
 
 import '@testing-library/jest-dom/vitest';
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import type { Addon } from '@openkaiden/api';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { writable } from 'svelte/store';
+import { toast } from 'svelte-sonner';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
+import * as addonsStore from '/@/kaiden/stores/addons';
 import { initializeDraftFromProject, resetDraft, wizard } from '/@/kaiden/stores/agent-workspace-create-draft.svelte';
 import * as agentsStore from '/@/kaiden/stores/agents';
 import * as mcpStore from '/@/kaiden/stores/mcp-remote-servers';
@@ -34,14 +37,17 @@ import * as ragStore from '/@/kaiden/stores/rag-environments';
 import * as secretVaultStore from '/@/kaiden/stores/secret-vault';
 import * as skillsStore from '/@/kaiden/stores/skills';
 import * as workspaceProjectsStore from '/@/kaiden/stores/workspace-projects';
+import MonacoEditor from '/@/lib/editor/MonacoEditor.svelte';
 import { handleNavigation } from '/@/navigation';
 import * as providerStore from '/@/stores/providers';
 import type { AgentInfo } from '/@api/agent-info';
 import type { MCPRemoteServerInfo } from '/@api/mcp/mcp-server-info';
 import type { CatalogModelInfo } from '/@api/model-registry-info';
-import { MIN_GATEWAY_VERSION, type SandboxInfo } from '/@api/openshell-gateway-info';
+import { NavigationPage } from '/@api/navigation-page';
+import { type GatewayInfo, MIN_GATEWAY_VERSION, type SandboxInfo } from '/@api/openshell-gateway-info';
 import type { ProviderInfo } from '/@api/provider-info';
 import type { RagEnvironment } from '/@api/rag/rag-environment';
+import type { GatewaySecretInfo } from '/@api/secret-info';
 import type { SecretVaultInfo } from '/@api/secret-vault/secret-vault-info';
 import type { SkillInfo } from '/@api/skill/skill-info';
 import type { WorkspaceProjectInfo } from '/@api/workspace-project-info';
@@ -49,6 +55,9 @@ import type { WorkspaceProjectInfo } from '/@api/workspace-project-info';
 import AgentWorkspaceCreate from './AgentWorkspaceCreate.svelte';
 
 vi.mock(import('/@/navigation'));
+vi.mock(import('svelte-sonner'));
+vi.mock(import('/@/lib/editor/MonacoEditor.svelte'));
+vi.mock(import('/@/kaiden/stores/addons'));
 vi.mock(import('/@/kaiden/stores/agents'));
 vi.mock(import('/@/kaiden/stores/skills'));
 vi.mock(import('/@/kaiden/stores/mcp-remote-servers'));
@@ -176,6 +185,7 @@ beforeEach(() => {
   vi.mocked(modelCatalogStore.modelSelectionKey).mockImplementation(
     (providerId: string, connectionId: string, label: string): string => `${providerId}::${connectionId}::${label}`,
   );
+  vi.mocked(addonsStore).addons = writable<Addon[]>([]);
   vi.mocked(workspaceProjectsStore).workspaceProjectInfos = writable<readonly WorkspaceProjectInfo[]>([]);
   vi.mocked(openshellGatewaysStore).openshellGateways = writable([
     {
@@ -195,1898 +205,1302 @@ beforeEach(() => {
   resetDraft();
 });
 
-test('Expect page title displayed', () => {
-  render(AgentWorkspaceCreate);
+function gateway(
+  name: string,
+  active: boolean,
+  state: { reachable: boolean; compatible: boolean } = { reachable: true, compatible: true },
+): GatewayInfo {
+  return {
+    canStop: false,
+    canStart: false,
+    name,
+    endpoint: `https://${name}.example.com`,
+    active,
+    gatewayState: {
+      reachable: state.reachable,
+      health: state.reachable ? 'healthy' : 'unknown',
+      compatible: state.compatible,
+    },
+  };
+}
 
-  expect(screen.getByText('Create Coding Agent Workspace')).toBeInTheDocument();
-});
+function setGateways(gateways: GatewayInfo[]): void {
+  vi.mocked(openshellGatewaysStore).openshellGateways.set(gateways);
+}
 
-test('Expect wizard stepper rendered with all five step labels', () => {
-  render(AgentWorkspaceCreate);
+function createButton(): HTMLElement {
+  return screen.getByRole('button', { name: 'Create workspace' });
+}
 
-  expect(screen.getByRole('navigation', { name: 'Wizard progress' })).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Workspace step' })).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Agent & Model step' })).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Tools & Secrets step' })).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'File System step' })).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Networking step' })).toBeInTheDocument();
-});
+async function clickCreate(): Promise<void> {
+  await waitFor(() => expect(createButton()).toBeEnabled());
+  await fireEvent.click(createButton());
+}
 
-test('Expect workspace step content shown on initial render', () => {
-  render(AgentWorkspaceCreate);
+function section(label: string): HTMLElement {
+  return screen.getByRole('region', { name: label });
+}
 
-  expect(screen.getByRole('heading', { name: 'Workspace' })).toBeInTheDocument();
-  expect(screen.getByText(/Point to a local project folder/)).toBeInTheDocument();
-});
+async function setSourcePath(path: string): Promise<void> {
+  await fireEvent.input(within(section('Folders')).getByPlaceholderText('/path/to/project'), {
+    target: { value: path },
+  });
+}
 
-test('Expect source input rendered with correct placeholder', () => {
-  render(AgentWorkspaceCreate);
+async function editName(name: string): Promise<void> {
+  await fireEvent.click(screen.getByRole('button', { name: 'Edit workspace name' }));
+  const input = screen.getByRole('textbox', { name: 'Workspace name' });
+  await fireEvent.input(input, { target: { value: name } });
+  await fireEvent.keyDown(input, { key: 'Enter' });
+}
 
-  expect(screen.getByPlaceholderText('/path/to/project')).toBeInTheDocument();
-});
+describe('header', () => {
+  test('Expect page title and unnamed workspace displayed by default', () => {
+    render(AgentWorkspaceCreate);
 
-test('Expect workspace name input rendered', () => {
-  render(AgentWorkspaceCreate);
-
-  expect(screen.getByPlaceholderText('e.g., front-refactor')).toBeInTheDocument();
-});
-
-test('Expect description section is collapsed by default', () => {
-  render(AgentWorkspaceCreate);
-
-  expect(screen.queryByRole('textbox', { name: 'Description' })).not.toBeInTheDocument();
-});
-
-test('Expect description section expands when toggle clicked', async () => {
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.click(screen.getByRole('button', { name: /Description/ }));
-
-  expect(screen.getByRole('textbox', { name: 'Description' })).toBeInTheDocument();
-});
-
-test('Expect workspace name auto-suggested from source path', async () => {
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-project' },
+    expect(screen.getByText('New workspace')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit workspace name' })).toHaveTextContent('unnamed');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  expect((screen.getByPlaceholderText('e.g., front-refactor') as HTMLInputElement).value).toBe('my-project');
-});
+  test('Expect description section expands when toggle clicked', async () => {
+    render(AgentWorkspaceCreate);
 
-test('Expect gateway selector hidden when only one gateway is available', () => {
-  render(AgentWorkspaceCreate);
+    expect(screen.queryByRole('textbox', { name: 'Description' })).not.toBeInTheDocument();
 
-  expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
-});
+    await fireEvent.click(screen.getByRole('button', { name: 'Add a description' }));
 
-test('Expect gateway selector defaults to the active OpenShell gateway when multiple gateways are available', async () => {
-  vi.mocked(openshellGatewaysStore).openshellGateways.set([
-    {
-      canStop: false,
-      canStart: false,
-      name: 'local',
-      endpoint: 'http://localhost:17670',
-      active: false,
-      gatewayState: { reachable: true, health: 'healthy', compatible: true },
-    },
-    {
-      canStop: false,
-      canStart: false,
-      name: 'remote',
-      endpoint: 'https://remote.example.com',
-      active: true,
-      gatewayState: { reachable: true, health: 'healthy', compatible: true },
-    },
-  ]);
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
+    expect(screen.getByRole('textbox', { name: 'Description' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Hide description' })).toHaveAttribute('aria-expanded', 'true');
   });
 
-  const gatewaySelector = screen.getByRole('combobox');
-  expect(gatewaySelector).toHaveValue('remote');
-  expect(screen.queryByRole('option', { name: 'Select a gateway' })).not.toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Continue' })).not.toBeDisabled();
+  test('Expect description sent when creating a workspace', async () => {
+    wizard.draft.sourcePath = '/home/user/my-repo';
+    render(AgentWorkspaceCreate);
 
-  await fireEvent.change(gatewaySelector, { target: { value: 'local' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Add a description' }));
+    await fireEvent.input(screen.getByRole('textbox', { name: 'Description' }), { target: { value: 'Fix the bug' } });
+    await clickCreate();
 
-  expect(gatewaySelector).toHaveValue('local');
-  expect(screen.getByRole('button', { name: 'Continue' })).not.toBeDisabled();
-});
-
-test('Expect selected gateway included when creating a workspace', async () => {
-  vi.mocked(openshellGatewaysStore).openshellGateways.set([
-    {
-      canStop: false,
-      canStart: false,
-      name: 'local',
-      endpoint: 'http://localhost:17670',
-      active: true,
-      gatewayState: { reachable: true, health: 'healthy', compatible: true },
-    },
-    {
-      canStop: false,
-      canStart: false,
-      name: 'remote',
-      endpoint: 'https://remote.example.com',
-      active: false,
-      gatewayState: { reachable: true, health: 'healthy', compatible: true },
-    },
-  ]);
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.change(screen.getByRole('combobox'), { target: { value: 'remote' } });
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(expect.objectContaining({ description: 'Fix the bug' }));
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(expect.objectContaining({ gateway: 'remote' }));
 });
 
-test('does not offer gateways while their reachability state is unavailable', () => {
-  vi.mocked(openshellGatewaysStore).openshellGateways.set([
-    { canStop: false, canStart: false, name: 'local', endpoint: 'http://localhost:17670', active: true },
-    { canStop: false, canStart: false, name: 'remote', endpoint: 'https://remote.example.com', active: false },
-  ]);
+describe('workspace name', () => {
+  beforeEach(() => {
+    wizard.draft.view = 'list';
+  });
 
-  render(AgentWorkspaceCreate);
+  test('Expect workspace name derived from source path', async () => {
+    render(AgentWorkspaceCreate);
 
-  expect(screen.queryByRole('option', { name: /local/ })).not.toBeInTheDocument();
-  expect(screen.queryByRole('option', { name: /remote/ })).not.toBeInTheDocument();
+    await setSourcePath('/home/user/my-project');
+
+    expect(screen.getByRole('button', { name: 'Edit workspace name' })).toHaveTextContent('my-project');
+    expect(wizard.draft.sessionName).toBe('my-project');
+  });
+
+  test('Expect basename-derived name sanitized to fit hostname limit', async () => {
+    render(AgentWorkspaceCreate);
+
+    await setSourcePath(`/home/user/${'a'.repeat(20)}`);
+
+    expect(wizard.draft.sessionName).toBe('a'.repeat(19));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    await waitFor(() => expect(createButton()).toBeEnabled());
+  });
+
+  test('Expect edited name kept when the source path changes', async () => {
+    render(AgentWorkspaceCreate);
+
+    await setSourcePath('/home/user/my-repo');
+    await editName('custom-name');
+
+    expect(screen.queryByRole('textbox', { name: 'Workspace name' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit workspace name' })).toHaveTextContent('custom-name');
+
+    await setSourcePath('/home/user/other-repo');
+
+    expect(screen.getByRole('button', { name: 'Edit workspace name' })).toHaveTextContent('custom-name');
+    await clickCreate();
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'custom-name', sourcePath: '/home/user/other-repo' }),
+    );
+  });
+
+  test('Expect Escape closes the name input', async () => {
+    render(AgentWorkspaceCreate);
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Edit workspace name' }));
+    await fireEvent.keyDown(screen.getByRole('textbox', { name: 'Workspace name' }), { key: 'Escape' });
+
+    expect(screen.queryByRole('textbox', { name: 'Workspace name' })).not.toBeInTheDocument();
+  });
+
+  test('Expect workspace created with name only when no source path', async () => {
+    render(AgentWorkspaceCreate);
+
+    await setSourcePath('   ');
+    await editName('my-sandbox');
+    await clickCreate();
+
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ sourcePath: undefined, name: 'my-sandbox' }),
+    );
+  });
+
+  test('Expect Create disabled and error shown when name exceeds hostname limit', async () => {
+    render(AgentWorkspaceCreate);
+
+    await setSourcePath('/home/user/my-repo');
+    await editName('a'.repeat(20));
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/must not exceed 19 characters/);
+    expect(createButton()).toBeDisabled();
+  });
+
+  test('Expect Create disabled and error shown when name is cleared', async () => {
+    render(AgentWorkspaceCreate);
+
+    await setSourcePath('/home/user/my-repo');
+    await editName('');
+
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    expect(createButton()).toBeDisabled();
+  });
+
+  test('Expect Create disabled and error shown when name already used on the selected gateway', async () => {
+    vi.mocked(openshellSandboxesStore).allOpenshellSandboxes = writable<(SandboxInfo & { gatewayName: string })[]>([
+      { id: 'sb-1', name: 'My-Repo', phase: 'Ready', gatewayName: 'kaiden' },
+    ]);
+    render(AgentWorkspaceCreate);
+
+    await setSourcePath('/home/user/my-repo');
+
+    expect(screen.getByRole('alert')).toHaveTextContent('A workspace with this name already exists');
+    expect(createButton()).toBeDisabled();
+    expect(window.checkAgentWorkspaceGlobalConfigExists).not.toHaveBeenCalled();
+  });
+
+  test('Expect name used on another gateway accepted', async () => {
+    vi.mocked(openshellSandboxesStore).allOpenshellSandboxes = writable<(SandboxInfo & { gatewayName: string })[]>([
+      { id: 'sb-1', name: 'my-repo', phase: 'Ready', gatewayName: 'other' },
+    ]);
+    render(AgentWorkspaceCreate);
+
+    await setSourcePath('/home/user/my-repo');
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    await waitFor(() => expect(createButton()).toBeEnabled());
+  });
 });
 
-test('does not offer unreachable gateways for workspace creation', () => {
-  vi.mocked(openshellGatewaysStore).openshellGateways.set([
-    {
-      canStop: false,
-      canStart: false,
-      name: 'local',
-      endpoint: 'http://localhost:17670',
-      active: true,
-      gatewayState: { reachable: true, health: 'healthy', compatible: true },
-    },
-    {
-      canStop: false,
-      canStart: false,
-      name: 'stopped',
-      endpoint: 'http://localhost:17671',
-      active: false,
-      gatewayState: { reachable: false, health: 'unknown', compatible: true },
-    },
-    {
-      canStop: false,
-      canStart: false,
-      name: 'remote',
-      endpoint: 'https://remote.example.com',
-      active: false,
-      gatewayState: { reachable: true, health: 'healthy', compatible: true },
-    },
-  ]);
+describe('gateway', () => {
+  test('Expect gateway chip shown and selector hidden when only one gateway is available', () => {
+    render(AgentWorkspaceCreate);
 
-  render(AgentWorkspaceCreate);
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+    expect(screen.getByText('OpenShell gateway · kaiden')).toBeInTheDocument();
+    expect(wizard.draft.selectedGateway).toBe('kaiden');
+  });
 
-  expect(screen.getByRole('option', { name: /local/ })).toBeInTheDocument();
-  expect(screen.getByRole('option', { name: /remote/ })).toBeInTheDocument();
-  expect(screen.queryByRole('option', { name: /stopped/ })).not.toBeInTheDocument();
-});
+  test('Expect single inactive gateway selected', () => {
+    setGateways([gateway('only', false)]);
+    render(AgentWorkspaceCreate);
 
-test('does not offer version-incompatible gateways for workspace creation', () => {
-  vi.mocked(openshellGatewaysStore).openshellGateways.set([
-    {
-      name: 'compatible-1',
-      endpoint: 'http://localhost:17670',
-      canStop: false,
-      canStart: false,
-      active: true,
-      version: MIN_GATEWAY_VERSION,
-      gatewayState: { reachable: true, health: 'healthy', compatible: true },
-    },
-    {
-      name: 'compatible-2',
-      endpoint: 'http://localhost:17672',
-      canStop: false,
-      canStart: false,
-      active: false,
-      version: MIN_GATEWAY_VERSION,
-      gatewayState: { reachable: true, health: 'healthy', compatible: true },
-    },
-    {
-      name: 'outdated',
-      endpoint: 'http://localhost:17671',
-      canStop: false,
-      canStart: false,
-      active: false,
-      version: '0.0.100',
-      gatewayState: { reachable: true, health: 'healthy', compatible: false },
-    },
-    {
-      name: 'no-version',
-      endpoint: 'https://remote.example.com',
-      canStop: false,
-      canStart: false,
-      active: false,
-      gatewayState: { reachable: true, health: 'healthy', compatible: false },
-    },
-  ]);
+    expect(wizard.draft.selectedGateway).toBe('only');
+  });
 
-  render(AgentWorkspaceCreate);
+  test('Expect message and Create disabled when no gateway is reachable', async () => {
+    setGateways([gateway('local', true, { reachable: false, compatible: true })]);
+    wizard.draft.sourcePath = '/home/user/my-repo';
+    render(AgentWorkspaceCreate);
 
-  expect(screen.getByRole('option', { name: /compatible-1/ })).toBeInTheDocument();
-  expect(screen.getByRole('option', { name: /compatible-2/ })).toBeInTheDocument();
-  expect(screen.queryByRole('option', { name: /outdated/ })).not.toBeInTheDocument();
-  expect(screen.queryByRole('option', { name: /no-version/ })).not.toBeInTheDocument();
-});
+    expect(screen.getByText('No reachable OpenShell gateway')).toBeInTheDocument();
+    await vi.waitFor(() => expect(window.listSecrets).toHaveBeenCalled());
+    expect(createButton()).toBeDisabled();
+  });
 
-test('user-selected gateway is preserved across store updates', async () => {
-  vi.mocked(openshellGatewaysStore).openshellGateways.set([
-    {
-      canStop: false,
-      canStart: false,
-      name: 'local',
-      endpoint: 'http://localhost:17670',
-      active: true,
-      gatewayState: { reachable: true, health: 'healthy', compatible: true },
-    },
-    {
-      canStop: false,
-      canStart: false,
-      name: 'remote',
-      endpoint: 'https://remote.example.com',
-      active: false,
-      gatewayState: { reachable: true, health: 'healthy', compatible: true },
-    },
-  ]);
-  render(AgentWorkspaceCreate);
+  test('Expect gateway selector defaults to the active gateway when multiple gateways are available', async () => {
+    setGateways([gateway('local', false), gateway('remote', true)]);
+    render(AgentWorkspaceCreate);
 
-  const gatewaySelector = screen.getByRole('combobox');
-  expect(gatewaySelector).toHaveValue('local');
-
-  await fireEvent.change(gatewaySelector, { target: { value: 'remote' } });
-  expect(gatewaySelector).toHaveValue('remote');
-
-  vi.mocked(openshellGatewaysStore).openshellGateways.set([
-    {
-      canStop: false,
-      canStart: false,
-      name: 'local',
-      endpoint: 'http://localhost:17670',
-      active: true,
-      gatewayState: { reachable: true, health: 'healthy', compatible: true },
-    },
-    {
-      canStop: false,
-      canStart: false,
-      name: 'remote',
-      endpoint: 'https://remote.example.com',
-      active: false,
-      gatewayState: { reachable: true, health: 'healthy', compatible: true },
-    },
-  ]);
-
-  await waitFor(() => {
+    const gatewaySelector = screen.getByRole('combobox');
     expect(gatewaySelector).toHaveValue('remote');
-  });
-});
 
-test('falls back to active gateway when selected gateway becomes unreachable', async () => {
-  vi.mocked(openshellGatewaysStore).openshellGateways.set([
-    {
-      canStop: false,
-      canStart: false,
-      name: 'local',
-      endpoint: 'http://localhost:17670',
-      active: true,
-      gatewayState: { reachable: true, health: 'healthy', compatible: true },
-    },
-    {
-      canStop: false,
-      canStart: false,
-      name: 'remote',
-      endpoint: 'https://remote.example.com',
-      active: false,
-      gatewayState: { reachable: true, health: 'healthy', compatible: true },
-    },
-    {
-      canStop: false,
-      canStart: false,
-      name: 'extra',
-      endpoint: 'https://extra.example.com',
-      active: false,
-      gatewayState: { reachable: true, health: 'healthy', compatible: true },
-    },
-  ]);
-  render(AgentWorkspaceCreate);
+    await fireEvent.change(gatewaySelector, { target: { value: 'local' } });
 
-  await fireEvent.change(screen.getByRole('combobox'), { target: { value: 'remote' } });
-  expect(screen.getByRole('combobox')).toHaveValue('remote');
-
-  vi.mocked(openshellGatewaysStore).openshellGateways.set([
-    {
-      canStop: false,
-      canStart: false,
-      name: 'local',
-      endpoint: 'http://localhost:17670',
-      active: true,
-      gatewayState: { reachable: true, health: 'healthy', compatible: true },
-    },
-    {
-      canStop: false,
-      canStart: false,
-      name: 'remote',
-      endpoint: 'https://remote.example.com',
-      active: false,
-      gatewayState: { reachable: false, health: 'unknown', compatible: true },
-    },
-    {
-      canStop: false,
-      canStart: false,
-      name: 'extra',
-      endpoint: 'https://extra.example.com',
-      active: false,
-      gatewayState: { reachable: true, health: 'healthy', compatible: true },
-    },
-  ]);
-
-  await waitFor(() => {
+    expect(gatewaySelector).toHaveValue('local');
     expect(wizard.draft.selectedGateway).toBe('local');
   });
-});
 
-test('clears selected gateway when all gateways become unreachable', async () => {
-  vi.mocked(openshellGatewaysStore).openshellGateways.set([
-    {
-      canStop: false,
-      canStart: false,
-      name: 'local',
-      endpoint: 'http://localhost:17670',
-      active: true,
-      gatewayState: { reachable: true, health: 'healthy', compatible: true },
-    },
-  ]);
-  render(AgentWorkspaceCreate);
+  test('Expect selected gateway included when creating a workspace', async () => {
+    setGateways([gateway('local', true), gateway('remote', false)]);
+    wizard.draft.sourcePath = '/home/user/my-repo';
+    render(AgentWorkspaceCreate);
 
-  expect(wizard.draft.selectedGateway).toBe('local');
+    await fireEvent.change(screen.getByRole('combobox'), { target: { value: 'remote' } });
+    await clickCreate();
 
-  vi.mocked(openshellGatewaysStore).openshellGateways.set([
-    {
-      canStop: false,
-      canStart: false,
-      name: 'local',
-      endpoint: 'http://localhost:17670',
-      active: true,
-      gatewayState: { reachable: false, health: 'unknown', compatible: true },
-    },
-  ]);
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(expect.objectContaining({ gateway: 'remote' }));
+  });
 
-  await waitFor(() => {
-    expect(wizard.draft.selectedGateway).toBe('');
+  test('does not offer gateways while their reachability state is unavailable', () => {
+    setGateways([
+      { ...gateway('local', true), gatewayState: undefined },
+      { ...gateway('remote', false), gatewayState: undefined },
+    ]);
+
+    render(AgentWorkspaceCreate);
+
+    expect(screen.queryByRole('option', { name: /local/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /remote/ })).not.toBeInTheDocument();
+  });
+
+  test('does not offer unreachable gateways for workspace creation', () => {
+    setGateways([
+      gateway('local', true),
+      gateway('stopped', false, { reachable: false, compatible: true }),
+      gateway('remote', false),
+    ]);
+
+    render(AgentWorkspaceCreate);
+
+    expect(screen.getByRole('option', { name: /local/ })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /remote/ })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /stopped/ })).not.toBeInTheDocument();
+  });
+
+  test('does not offer version-incompatible gateways for workspace creation', () => {
+    setGateways([
+      { ...gateway('compatible-1', true), version: MIN_GATEWAY_VERSION },
+      { ...gateway('compatible-2', false), version: MIN_GATEWAY_VERSION },
+      { ...gateway('outdated', false, { reachable: true, compatible: false }), version: '0.0.100' },
+      gateway('no-version', false, { reachable: true, compatible: false }),
+    ]);
+
+    render(AgentWorkspaceCreate);
+
+    expect(screen.getByRole('option', { name: /compatible-1/ })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /compatible-2/ })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /outdated/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /no-version/ })).not.toBeInTheDocument();
+  });
+
+  test('user-selected gateway is preserved across store updates', async () => {
+    setGateways([gateway('local', true), gateway('remote', false)]);
+    render(AgentWorkspaceCreate);
+
+    const gatewaySelector = screen.getByRole('combobox');
+    expect(gatewaySelector).toHaveValue('local');
+
+    await fireEvent.change(gatewaySelector, { target: { value: 'remote' } });
+    setGateways([gateway('local', true), gateway('remote', false)]);
+
+    await waitFor(() => expect(gatewaySelector).toHaveValue('remote'));
+  });
+
+  test('falls back to active gateway when selected gateway becomes unreachable', async () => {
+    setGateways([gateway('local', true), gateway('remote', false), gateway('extra', false)]);
+    render(AgentWorkspaceCreate);
+
+    await fireEvent.change(screen.getByRole('combobox'), { target: { value: 'remote' } });
+    expect(screen.getByRole('combobox')).toHaveValue('remote');
+
+    setGateways([
+      gateway('local', true),
+      gateway('remote', false, { reachable: false, compatible: true }),
+      gateway('extra', false),
+    ]);
+
+    await waitFor(() => expect(wizard.draft.selectedGateway).toBe('local'));
+  });
+
+  test('clears selected gateway when all gateways become unreachable', async () => {
+    setGateways([gateway('local', true)]);
+    render(AgentWorkspaceCreate);
+
+    expect(wizard.draft.selectedGateway).toBe('local');
+
+    setGateways([gateway('local', true, { reachable: false, compatible: true })]);
+
+    await waitFor(() => expect(wizard.draft.selectedGateway).toBe(''));
   });
 });
 
-test('Expect Continue button rendered on step 1', () => {
-  render(AgentWorkspaceCreate);
-
-  expect(screen.getByRole('button', { name: 'Continue' })).toBeInTheDocument();
-});
-
-test('Expect Continue button disabled when source is empty', () => {
-  render(AgentWorkspaceCreate);
-
-  expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
-});
-
-test('Expect Continue button enabled when name and source are filled', async () => {
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
+describe('defaults', () => {
+  beforeEach(() => {
+    wizard.draft.sourcePath = '/home/user/my-repo';
   });
 
-  expect(screen.getByRole('button', { name: 'Continue' })).not.toBeDisabled();
-});
+  test('Expect default agent from onboarding.defaultWorkspaceSettings when valid', async () => {
+    vi.mocked(window.getConfigurationValue).mockResolvedValue({ defaultAgent: 'claude' });
 
-test('Expect Continue button enabled when sourcePath is empty but workspace name is filled', async () => {
-  render(AgentWorkspaceCreate);
+    render(AgentWorkspaceCreate);
+    await clickCreate();
 
-  await fireEvent.input(screen.getByPlaceholderText('e.g., front-refactor'), {
-    target: { value: 'my-sandbox' },
+    expect(window.getConfigurationValue).toHaveBeenCalledWith('onboarding.defaultWorkspaceSettings');
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(expect.objectContaining({ agent: 'claude' }));
   });
 
-  expect(screen.getByRole('button', { name: 'Continue' })).not.toBeDisabled();
-});
+  test.each([
+    { name: 'empty', defaultAgent: '' },
+    { name: 'unknown', defaultAgent: 'unknown-agent' },
+  ])('Expect default agent falls back to opencode when setting is $name', async ({ defaultAgent }) => {
+    vi.mocked(window.getConfigurationValue).mockResolvedValue({ defaultAgent });
 
-test('Expect whitespace-only sourcePath sent as undefined to createAgentWorkspace', async () => {
-  render(AgentWorkspaceCreate);
+    render(AgentWorkspaceCreate);
+    await clickCreate();
 
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '   ' },
-  });
-  await fireEvent.input(screen.getByPlaceholderText('e.g., front-refactor'), {
-    target: { value: 'my-sandbox' },
-  });
-
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      sourcePath: undefined,
-      name: 'my-sandbox',
-    }),
-  );
-});
-
-test('Expect Continue button disabled when workspace name exceeds hostname limit', async () => {
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  await fireEvent.input(screen.getByPlaceholderText('e.g., front-refactor'), {
-    target: { value: 'a'.repeat(20) },
-  });
-
-  expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
-  expect(screen.getByText(/must not exceed 19 characters/)).toBeInTheDocument();
-});
-
-test('Expect basename-derived name sanitized to fit hostname limit', async () => {
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: `/home/user/${'a'.repeat(20)}` },
-  });
-
-  expect((screen.getByPlaceholderText('e.g., front-refactor') as HTMLInputElement).value).toBe('a'.repeat(19));
-  expect(screen.getByRole('button', { name: 'Continue' })).not.toBeDisabled();
-});
-
-test('Expect use-all-defaults button on step 1', async () => {
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-
-  expect(screen.getByRole('button', { name: 'Use all defaults and create workspace' })).not.toBeDisabled();
-});
-
-test('Expect use-all-defaults button disabled on step 1 when source is empty', () => {
-  render(AgentWorkspaceCreate);
-
-  expect(screen.getByRole('button', { name: 'Use all defaults and create workspace' })).toBeDisabled();
-});
-
-test('Expect Cancel button always visible', () => {
-  render(AgentWorkspaceCreate);
-
-  expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
-});
-
-test('Expect Back button not visible on first step', () => {
-  render(AgentWorkspaceCreate);
-
-  expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument();
-});
-
-test('Expect sandbox security message displayed with step counter', () => {
-  render(AgentWorkspaceCreate);
-
-  expect(screen.getByText(/Step 1 of 5 · Workspace will run in a secured sandbox environment/)).toBeInTheDocument();
-});
-
-test('Expect navigating to agent & model step shows coding agent options', async () => {
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-
-  expect(screen.getAllByText('Coding Agent').length).toBeGreaterThanOrEqual(1);
-  expect(screen.getByText('Claude Code')).toBeInTheDocument();
-  expect(screen.getByText('Goose')).toBeInTheDocument();
-  expect(screen.getAllByText('OpenCode').length).toBeGreaterThanOrEqual(1);
-  expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument();
-});
-
-test('Expect Start Workspace button visible on last step', async () => {
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-
-  for (let i = 0; i < wizardStepCount - 1; i++) {
-    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  }
-
-  expect(screen.getByRole('button', { name: 'Start Workspace' })).toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
-});
-
-test('Expect custom mounts section shown when Custom Paths selected on filesystem step', async () => {
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  // Workspace → Agent & Model → Tools & Secrets → File System
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-
-  await fireEvent.click(screen.getByRole('radio', { name: 'Use Custom Paths' }));
-
-  expect(screen.getByPlaceholderText('/path/on/host')).toBeInTheDocument();
-  expect(screen.getByPlaceholderText('Leave empty to place the folder at /sandbox/<folder name>')).toBeInTheDocument();
-  expect(
-    screen.getByText(
-      'Mount host directories into the workspace. Only the sandbox working directory and /tmp are writable by default; ' +
-        'leave the target empty to place the folder at /sandbox/<folder name>.',
-    ),
-  ).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Add Another Mount' })).toBeInTheDocument();
-});
-
-async function navigateToToolsSecretsStep(): Promise<void> {
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  // Workspace → Agent & Model → Tools & Secrets
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-}
-
-async function expandCustomize(): Promise<void> {
-  await fireEvent.click(screen.getByRole('button', { name: /Customize skills, MCP servers, vault, and knowledges/ }));
-}
-
-test('Expect summary card and customize toggle on tools & secrets step', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToToolsSecretsStep();
-
-  expect(screen.getByText(/Everything available is included/)).toBeInTheDocument();
-  expect(
-    screen.getByRole('button', { name: /Customize skills, MCP servers, vault, and knowledges/ }),
-  ).toBeInTheDocument();
-});
-
-test('Expect secrets section visible after expanding customize', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToToolsSecretsStep();
-  await expandCustomize();
-
-  expect(screen.getByText('Secret Vault')).toBeInTheDocument();
-  expect(screen.getByText('Select secrets from your vault to make available in the workspace')).toBeInTheDocument();
-});
-
-test('Expect secrets empty state shown when vault is empty', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToToolsSecretsStep();
-  await expandCustomize();
-
-  expect(screen.getByText('No secrets in your vault yet.')).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Open Vault' })).toBeInTheDocument();
-});
-
-test('Expect secrets listed from the selected gateway', async () => {
-  vi.mocked(openshellGatewaysStore).openshellGateways.set([
-    {
-      canStop: false,
-      canStart: false,
-      name: 'local',
-      endpoint: 'http://localhost:17670',
-      active: true,
-      gatewayState: { reachable: true, health: 'healthy', compatible: true },
-    },
-    {
-      canStop: false,
-      canStart: false,
-      name: 'remote',
-      endpoint: 'https://remote.example.com',
-      active: false,
-      gatewayState: { reachable: true, health: 'healthy', compatible: true },
-    },
-  ]);
-  vi.mocked(window.listSecrets).mockImplementation(async gateway =>
-    gateway === 'remote'
-      ? [
-          {
-            name: 'github-token',
-            type: 'github',
-            description: 'Personal access token',
-            gateway: 'remote',
-          },
-          {
-            name: 'anthropic-key',
-            type: 'anthropic',
-            description: 'API key',
-            gateway: 'remote',
-          },
-        ]
-      : [
-          {
-            name: 'local-only-secret',
-            type: 'generic',
-            description: 'Only available on the local gateway',
-            gateway: 'local',
-          },
-        ],
-  );
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.change(screen.getByRole('combobox'), { target: { value: 'remote' } });
-  await navigateToToolsSecretsStep();
-  await expandCustomize();
-
-  expect(screen.getByText('github-token')).toBeInTheDocument();
-  expect(screen.getByText('anthropic-key')).toBeInTheDocument();
-  expect(screen.queryByText('local-only-secret')).not.toBeInTheDocument();
-  expect(window.listSecrets).toHaveBeenCalledWith('remote');
-  expect(screen.getByText('Secret Vault')).toBeInTheDocument();
-  expect(screen.queryByText('No secrets in your vault yet.')).not.toBeInTheDocument();
-});
-
-test('Expect stale secret selections cleared and Continue disabled while gateway secrets load', async () => {
-  let resolveSecrets: (secrets: { name: string; type: string; description: string; gateway: string }[]) => void;
-  vi.mocked(window.listSecrets).mockImplementation(
-    () =>
-      new Promise(resolve => {
-        resolveSecrets = resolve;
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: 'opencode',
+        network: { mode: 'deny', hosts: ['registry.npmjs.org', 'pypi.python.org'] },
       }),
-  );
-  wizard.draft.selectedSecretIds = ['local-only-secret'];
-
-  render(AgentWorkspaceCreate);
-
-  await navigateToToolsSecretsStep();
-
-  expect(wizard.draft.selectedSecretIds).toEqual([]);
-  expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
-
-  resolveSecrets!([
-    { name: 'remote-secret', type: 'generic', description: 'Remote gateway secret', gateway: 'remote' },
-  ]);
-
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' })).not.toBeDisabled());
-});
-
-test('Expect Open Vault button navigates to secret vault', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToToolsSecretsStep();
-  await expandCustomize();
-  await fireEvent.click(screen.getByRole('button', { name: 'Open Vault' }));
-
-  expect(handleNavigation).toHaveBeenCalledWith({ page: 'secret-vault' });
-});
-
-test('Expect skills section visible after expanding customize', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToToolsSecretsStep();
-  await expandCustomize();
-
-  expect(screen.getByText('Skills')).toBeInTheDocument();
-  expect(screen.getByText('Select the capabilities your agent should have')).toBeInTheDocument();
-});
-
-test('Expect skills empty state shown when no skills available', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToToolsSecretsStep();
-  await expandCustomize();
-
-  expect(screen.getByText('No skills available yet.')).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Manage Skills' })).toBeInTheDocument();
-});
-
-test('Expect skills listed when store has entries', async () => {
-  vi.mocked(skillsStore).skillInfos = writable<SkillInfo[]>([
-    {
-      name: 'kubernetes',
-      description: 'Deploy & manage clusters',
-      path: '/skills/kubernetes',
-      enabled: true,
-      managed: false,
-    },
-    {
-      name: 'code-review',
-      description: 'Analyze code quality & security',
-      path: '/skills/code-review',
-      enabled: true,
-      managed: true,
-    },
-  ]);
-
-  render(AgentWorkspaceCreate);
-
-  await navigateToToolsSecretsStep();
-  await expandCustomize();
-
-  expect(screen.getByText('kubernetes')).toBeInTheDocument();
-  expect(screen.getByText('code-review')).toBeInTheDocument();
-  expect(screen.queryByText('No skills available yet.')).not.toBeInTheDocument();
-});
-
-test.each([
-  { managed: false, expectedGroup: 'Pre-built', unexpectedGroup: 'Custom' },
-  { managed: true, expectedGroup: 'Custom', unexpectedGroup: 'Pre-built' },
-])('Expect managed=$managed maps to the correct group', async ({ managed, expectedGroup, unexpectedGroup }) => {
-  vi.mocked(skillsStore).skillInfos = writable<SkillInfo[]>([
-    {
-      name: 'sample-skill',
-      description: 'Sample description',
-      path: '/skills/sample-skill',
-      enabled: true,
-      managed,
-    },
-  ]);
-
-  render(AgentWorkspaceCreate);
-
-  await navigateToToolsSecretsStep();
-  await expandCustomize();
-
-  expect(screen.getByText(expectedGroup)).toBeInTheDocument();
-  expect(screen.queryByText(unexpectedGroup)).not.toBeInTheDocument();
-});
-
-test('Expect disabled skills excluded from wizard checklist', async () => {
-  vi.mocked(skillsStore).skillInfos = writable<SkillInfo[]>([
-    {
-      name: 'kubernetes',
-      description: 'Deploy & manage clusters',
-      path: '/skills/kubernetes',
-      enabled: true,
-      managed: false,
-    },
-    {
-      name: 'code-review',
-      description: 'Analyze code quality & security',
-      path: '/skills/code-review',
-      enabled: false,
-      managed: true,
-    },
-  ]);
-
-  render(AgentWorkspaceCreate);
-
-  await navigateToToolsSecretsStep();
-  await expandCustomize();
-
-  expect(screen.getByText('kubernetes')).toBeInTheDocument();
-  expect(screen.queryByText('code-review')).not.toBeInTheDocument();
-});
-
-test('Expect createAgentWorkspace excludes disabled skill paths', async () => {
-  vi.mocked(skillsStore).skillInfos = writable<SkillInfo[]>([
-    {
-      name: 'kubernetes',
-      description: 'Deploy & manage clusters',
-      path: '/home/user/.kaiden/skills/kubernetes',
-      enabled: true,
-      managed: false,
-    },
-    {
-      name: 'code-review',
-      description: 'Analyze code quality',
-      path: '/home/user/.kaiden/skills/code-review',
-      enabled: false,
-      managed: true,
-    },
-  ]);
-  wizard.draft.selectedSkillIds = ['kubernetes'];
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
+    );
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
 
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      skills: ['/home/user/.kaiden/skills/kubernetes'],
-    }),
-  );
-});
+  test('Expect default model from onboarding.defaultWorkspaceSettings when valid', async () => {
+    vi.mocked(window.getConfigurationValue).mockResolvedValue({
+      defaultAgent: 'opencode',
+      defaultAgentSettings: {
+        opencode: { defaultModel: { providerId: 'claude', connectionId: 'conn-0', label: 'claude-opus-4' } },
+      },
+    });
 
-test('Expect Manage Skills button navigates to skills page', async () => {
-  render(AgentWorkspaceCreate);
+    render(AgentWorkspaceCreate);
+    await clickCreate();
 
-  await navigateToToolsSecretsStep();
-  await expandCustomize();
-  await fireEvent.click(screen.getByRole('button', { name: 'Manage Skills' }));
-
-  expect(handleNavigation).toHaveBeenCalledWith({ page: 'skills' });
-});
-
-test('Expect createAgentWorkspace called with skill paths', async () => {
-  vi.mocked(skillsStore).skillInfos = writable<SkillInfo[]>([
-    {
-      name: 'kubernetes',
-      description: 'Deploy & manage clusters',
-      path: '/home/user/.kaiden/skills/kubernetes',
-      enabled: true,
-      managed: false,
-    },
-    {
-      name: 'code-review',
-      description: 'Analyze code quality',
-      path: '/home/user/.kaiden/skills/code-review',
-      enabled: true,
-      managed: true,
-    },
-  ]);
-  wizard.draft.selectedSkillIds = ['kubernetes', 'code-review'];
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'anthropic::claude-opus-4::' }),
+    );
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
 
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      skills: ['/home/user/.kaiden/skills/kubernetes', '/home/user/.kaiden/skills/code-review'],
-    }),
-  );
-});
+  test('Expect first compatible model used when defaultWorkspaceSettings has no model and providers exist', async () => {
+    vi.mocked(window.getConfigurationValue).mockResolvedValue({ defaultAgent: 'opencode' });
+    setProviders([mockAnthropicProvider, mockOllamaProvider]);
 
-test('Expect createAgentWorkspace called without skills when none available', async () => {
-  render(AgentWorkspaceCreate);
+    render(AgentWorkspaceCreate);
+    await clickCreate();
 
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'anthropic::claude-sonnet-4::' }),
+    );
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
 
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      skills: undefined,
-    }),
-  );
-});
+  test('Expect first compatible model used when defaultWorkspaceSettings is undefined and providers exist', async () => {
+    vi.mocked(window.getConfigurationValue).mockResolvedValue(undefined);
+    setProviders([mockOllamaProvider]);
 
-test('Expect createAgentWorkspace called with secret ids when vault has entries', async () => {
-  vi.mocked(secretVaultStore).secretVaultInfos = writable<readonly SecretVaultInfo[]>([
-    {
-      id: 'github-token',
-      name: 'GitHub Token',
-      gateway: 'local',
-      type: 'github',
-      description: 'Personal access token',
-    },
-    {
-      id: 'anthropic-key',
-      name: 'Anthropic Key',
-      gateway: 'local',
-      type: 'anthropic',
-      description: 'API key',
-    },
-  ]);
-  wizard.draft.selectedSecretIds = ['github-token', 'anthropic-key'];
+    render(AgentWorkspaceCreate);
+    await clickCreate();
 
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'ollama::llama3.2:3b::' }),
+    );
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
 
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      secrets: ['github-token', 'anthropic-key'],
-    }),
-  );
-});
+  test('Expect first model compatible with the default agent skipped when not supported', async () => {
+    vi.mocked(window.getConfigurationValue).mockResolvedValue({ defaultAgent: 'claude' });
+    setProviders([mockOllamaProvider, mockAnthropicProvider]);
 
-test('Expect createAgentWorkspace called without secrets when vault is empty', async () => {
-  render(AgentWorkspaceCreate);
+    render(AgentWorkspaceCreate);
+    await clickCreate();
 
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: 'claude', model: 'anthropic::claude-sonnet-4::' }),
+    );
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
 
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      secrets: undefined,
-    }),
-  );
-});
+  test('Expect draft already initialized keeps its agent and model', async () => {
+    vi.mocked(window.getConfigurationValue).mockResolvedValue({ defaultAgent: 'claude' });
+    setProviders([mockAnthropicProvider, mockOllamaProvider]);
+    wizard.draft.initialized = true;
+    wizard.draft.selectedAgent = 'goose';
+    wizard.draft.selectedModel = buildCatalogModels([mockOllamaProvider])[0];
 
-test('Expect Knowledges section visible after expanding customize', async () => {
-  render(AgentWorkspaceCreate);
+    render(AgentWorkspaceCreate);
+    await clickCreate();
 
-  await navigateToToolsSecretsStep();
-  await expandCustomize();
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: 'goose', model: 'ollama::llama3.2:3b::' }),
+    );
+  });
 
-  expect(screen.getByText('Knowledges')).toBeInTheDocument();
-  expect(screen.getByText('Optional retrieval context for the agent')).toBeInTheDocument();
-});
+  test('Expect Create disabled when no model available', async () => {
+    setProviders([]);
 
-test('Expect Knowledges empty state shown when no knowledge bases available', async () => {
-  render(AgentWorkspaceCreate);
+    render(AgentWorkspaceCreate);
 
-  await navigateToToolsSecretsStep();
-  await expandCustomize();
+    await vi.waitFor(() => expect(wizard.draft.initialized).toBe(true));
+    expect(createButton()).toBeDisabled();
+    expect(screen.getByText('No model')).toBeInTheDocument();
+  });
 
-  expect(screen.getByText('No knowledge bases available yet.')).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Manage Knowledges' })).toBeInTheDocument();
-});
-
-test('Expect knowledge bases listed with provider display name and source count', async () => {
-  setProviders([{ id: 'milvus', name: 'Milvus' } as ProviderInfo]);
-  vi.mocked(ragStore).ragEnvironments = writable<RagEnvironment[]>([
-    {
-      name: 'kubernetes-knowledges',
-      ragConnection: { name: 'my-connection', providerId: 'milvus' },
-      chunkerConnection: { id: 'docling', providerId: 'milvus' },
-      mcpServer: { id: 'kb-mcp', name: 'kb-mcp' } as MCPRemoteServerInfo,
-      files: [
-        { path: '/docs/k8s.md', status: 'indexed' },
-        { path: '/docs/pods.md', status: 'indexed' },
+  test('Expect createAgentWorkspace called with workspaceConfiguration from settings for selected agent', async () => {
+    const workspaceConfiguration = {
+      environment: [
+        { name: 'CLAUDE_CODE_USE_VERTEX', value: '1' },
+        { name: 'CLOUD_ML_REGION', value: 'us-east5' },
       ],
-    },
-  ]);
-
-  render(AgentWorkspaceCreate);
-
-  await navigateToToolsSecretsStep();
-  await expandCustomize();
-
-  expect(screen.getByText('kubernetes-knowledges')).toBeInTheDocument();
-  expect(screen.getByText('Milvus · 2 sources')).toBeInTheDocument();
-  expect(screen.queryByText('No knowledge bases available yet.')).not.toBeInTheDocument();
-});
-
-test('Expect Manage Knowledges button navigates to rag environments page', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToToolsSecretsStep();
-  await expandCustomize();
-  await fireEvent.click(screen.getByRole('button', { name: 'Manage Knowledges' }));
-
-  expect(handleNavigation).toHaveBeenCalledWith({ page: 'rag-environments' });
-});
-
-async function navigateToNetworkingStep(): Promise<void> {
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  // Workspace → Agent & Model → Tools & Secrets → File System → Networking
-  for (let i = 0; i < 4; i++) {
-    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  }
-}
-
-test('Expect networking step shows Network Policy heading', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToNetworkingStep();
-
-  expect(screen.getByText('Network Policy')).toBeInTheDocument();
-  expect(screen.getByText('Outbound network for this workspace sandbox')).toBeInTheDocument();
-});
-
-test('Expect three network options rendered with Agent mode disabled and Unrestricted absent', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToNetworkingStep();
-
-  expect(screen.getByRole('radio', { name: 'Use Deny All' })).toBeInTheDocument();
-  expect(screen.getByRole('radio', { name: 'Use Developer Preset' })).toBeInTheDocument();
-  expect(screen.getByRole('radio', { name: 'Use Agent mode' })).toBeInTheDocument();
-  expect(screen.getByRole('radio', { name: 'Use Agent mode' })).toBeDisabled();
-  expect(screen.queryByRole('radio', { name: 'Use Unrestricted' })).not.toBeInTheDocument();
-  expect(screen.queryByRole('radio', { name: 'Use Allow all outbound' })).not.toBeInTheDocument();
-});
-
-test('Expect clicking disabled Agent mode does not change selection', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToNetworkingStep();
-
-  await userEvent.click(screen.getByRole('radio', { name: 'Use Agent mode' }));
-
-  expect(screen.getByRole('radio', { name: 'Use Developer Preset' })).toBeChecked();
-  expect(screen.getByRole('radio', { name: 'Use Agent mode' })).not.toBeChecked();
-});
-
-test('Expect Developer Preset selected by default on networking step', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToNetworkingStep();
-
-  expect(screen.getByRole('radio', { name: 'Use Developer Preset' })).toBeChecked();
-  expect(screen.getByRole('radio', { name: 'Use Deny All' })).not.toBeChecked();
-});
-
-test('Expect selecting Deny All updates the radio', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToNetworkingStep();
-
-  await fireEvent.click(screen.getByRole('radio', { name: 'Use Deny All' }));
-
-  expect(screen.getByRole('radio', { name: 'Use Deny All' })).toBeChecked();
-  expect(screen.getByRole('radio', { name: 'Use Developer Preset' })).not.toBeChecked();
-});
-
-test('Expect default agent from onboarding.defaultWorkspaceSettings when valid', async () => {
-  vi.mocked(window.getConfigurationValue).mockResolvedValue({ defaultAgent: 'claude' });
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
-
-  expect(window.getConfigurationValue).toHaveBeenCalledWith('onboarding.defaultWorkspaceSettings');
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      agent: 'claude',
-    }),
-  );
-});
-
-test('Expect default agent falls back to opencode when setting is empty', async () => {
-  vi.mocked(window.getConfigurationValue).mockResolvedValue({ defaultAgent: '' });
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      agent: 'opencode',
-      network: {
-        mode: 'deny',
-        hosts: ['registry.npmjs.org', 'pypi.python.org'],
-      },
-    }),
-  );
-});
-
-test('Expect default agent falls back to opencode when setting is unknown value', async () => {
-  vi.mocked(window.getConfigurationValue).mockResolvedValue({ defaultAgent: 'unknown-agent' });
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      agent: 'opencode',
-    }),
-  );
-});
-
-test('Expect createAgentWorkspace called with deny network when blocked selected', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToNetworkingStep();
-  await fireEvent.click(screen.getByRole('radio', { name: 'Use Deny All' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      network: { mode: 'deny' },
-    }),
-  );
-});
-
-test('Expect createAgentWorkspace called without network when agent_mode selected', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToNetworkingStep();
-  await fireEvent.click(screen.getByRole('radio', { name: 'Use Agent mode' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      network: undefined,
-    }),
-  );
-});
-
-test('Expect default model from onboarding.defaultWorkspaceSettings when valid', async () => {
-  vi.mocked(window.getConfigurationValue).mockResolvedValue({
-    defaultAgent: 'opencode',
-    defaultAgentSettings: {
-      opencode: {
-        defaultModel: { providerId: 'claude', connectionId: 'conn-0', label: 'claude-sonnet-4' },
-      },
-    },
-  });
-  setProviders([mockAnthropicProvider]);
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
-
-  expect(window.getConfigurationValue).toHaveBeenCalledWith('onboarding.defaultWorkspaceSettings');
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      model: 'anthropic::claude-sonnet-4::',
-    }),
-  );
-});
-
-test('Expect first compatible model used when defaultWorkspaceSettings has no model and providers exist', async () => {
-  vi.mocked(window.getConfigurationValue).mockResolvedValue({ defaultAgent: 'opencode' });
-  setProviders([mockAnthropicProvider, mockOllamaProvider]);
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      model: 'anthropic::claude-sonnet-4::',
-    }),
-  );
-});
-
-test('Expect use-all-defaults button disabled when no model available', async () => {
-  setProviders([]);
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-
-  expect(screen.getByRole('button', { name: 'Use all defaults and create workspace' })).toBeDisabled();
-});
-
-test('Expect Continue button disabled on agent & model step when no model available', async () => {
-  setProviders([]);
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-
-  expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
-});
-
-test('Expect Start Workspace button disabled when no model available', async () => {
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-
-  for (let i = 0; i < wizardStepCount - 1; i++) {
-    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  }
-
-  setProviders([]);
-  wizard.draft.selectedModel = undefined;
-
-  await vi.waitFor(() => {
-    expect(screen.getByRole('button', { name: 'Start Workspace' })).toBeDisabled();
-  });
-});
-
-test('Expect first compatible model used when defaultWorkspaceSettings is undefined and providers exist', async () => {
-  vi.mocked(window.getConfigurationValue).mockResolvedValue(undefined);
-  setProviders([mockOllamaProvider]);
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      model: 'ollama::llama3.2:3b::',
-    }),
-  );
-});
-
-test('Expect custom hosts input shown when Deny All is selected on networking step', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToNetworkingStep();
-  await fireEvent.click(screen.getByRole('radio', { name: 'Use Deny All' }));
-
-  expect(screen.getByLabelText('Custom host 1')).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Add Another Host' })).toBeInTheDocument();
-});
-
-test('Expect custom hosts pre-populated with registry hosts when Developer Preset is selected', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToNetworkingStep();
-
-  expect(screen.getByLabelText('Custom host 1')).toBeInTheDocument();
-  expect((screen.getByLabelText('Custom host 1') as HTMLInputElement).value).toBe('registry.npmjs.org');
-  expect((screen.getByLabelText('Custom host 2') as HTMLInputElement).value).toBe('pypi.python.org');
-  expect(screen.getByRole('button', { name: 'Add Another Host' })).toBeInTheDocument();
-});
-
-test('Expect createAgentWorkspace called with registry hosts plus custom host for Developer Preset', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToNetworkingStep();
-
-  await fireEvent.click(screen.getByRole('button', { name: 'Add Another Host' }));
-  await fireEvent.input(screen.getByLabelText('Custom host 3'), {
-    target: { value: 'api.example.com' },
-  });
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      network: { mode: 'deny', hosts: ['registry.npmjs.org', 'pypi.python.org', 'api.example.com'] },
-    }),
-  );
-});
-
-test('Expect createAgentWorkspace splits MCP servers into remote and command entries', async () => {
-  vi.mocked(mcpStore).mcpRemoteServerInfos = writable<MCPRemoteServerInfo[]>([
-    {
-      id: 'mcp-remote',
-      name: 'GitHub MCP',
-      description: 'Repos & PRs',
-      url: 'https://mcp.github.com/sse',
-      setupType: 'remote',
-      infos: { internalProviderId: 'p1', serverId: 's1', remoteId: 1 },
-      tools: { 'list-repos': {} },
-    },
-    {
-      id: 'mcp-pkg',
-      name: 'NPM MCP',
-      description: 'Node MCP server',
-      url: '',
-      setupType: 'package',
-      commandSpec: { command: 'npx', args: ['@example/mcp@1.0.0'] },
-      infos: { internalProviderId: 'p2', serverId: 's2', remoteId: 0 },
-      tools: {},
-    },
-  ]);
-  wizard.draft.selectedMcpIds = ['mcp-remote', 'mcp-pkg'];
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      mcp: {
-        servers: [{ name: 'GitHub MCP', url: 'https://mcp.github.com/sse' }],
-        commands: [{ name: 'NPM MCP', command: 'npx', args: ['@example/mcp@1.0.0'], env: undefined }],
-      },
-    }),
-  );
-});
-
-test('Expect createAgentWorkspace called with custom hosts only for Deny All with custom host', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToNetworkingStep();
-  await fireEvent.click(screen.getByRole('radio', { name: 'Use Deny All' }));
-
-  await fireEvent.input(screen.getByLabelText('Custom host 1'), {
-    target: { value: 'internal.corp.io' },
-  });
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      network: { mode: 'deny', hosts: ['internal.corp.io'] },
-    }),
-  );
-});
-
-test('Expect Add Another Host button adds a new input field', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToNetworkingStep();
-
-  expect(screen.queryByLabelText('Custom host 3')).not.toBeInTheDocument();
-
-  await fireEvent.click(screen.getByRole('button', { name: 'Add Another Host' }));
-
-  expect(screen.getByLabelText('Custom host 3')).toBeInTheDocument();
-});
-
-test('Expect Remove button removes a registry host', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToNetworkingStep();
-
-  expect(screen.getByLabelText('Custom host 2')).toBeInTheDocument();
-
-  await fireEvent.click(screen.getByRole('button', { name: 'Remove host 2' }));
-
-  expect(screen.queryByLabelText('Custom host 2')).not.toBeInTheDocument();
-});
-
-test('Expect createAgentWorkspace called without removed registry host for Developer Preset', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToNetworkingStep();
-
-  await fireEvent.click(screen.getByRole('button', { name: 'Remove host 1' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      network: { mode: 'deny', hosts: ['pypi.python.org'] },
-    }),
-  );
-});
-
-test('Expect Deny All resets to empty host list when switching from Developer Preset', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToNetworkingStep();
-
-  expect((screen.getByLabelText('Custom host 1') as HTMLInputElement).value).toBe('registry.npmjs.org');
-
-  await fireEvent.click(screen.getByRole('radio', { name: 'Use Deny All' }));
-
-  expect((screen.getByLabelText('Custom host 1') as HTMLInputElement).value).toBe('');
-});
-
-test('Expect createAgentWorkspace called with workspaceConfiguration from settings for selected agent', async () => {
-  vi.mocked(window.getConfigurationValue).mockResolvedValue({
-    defaultAgent: 'claude',
-    defaultAgentSettings: {
-      claude: {
-        defaultModel: { providerId: 'claude', connectionId: 'conn-0', label: 'claude-sonnet-4' },
-        workspaceConfiguration: {
-          environment: [
-            { name: 'CLAUDE_CODE_USE_VERTEX', value: '1' },
-            { name: 'CLOUD_ML_REGION', value: 'us-east5' },
-          ],
-          mounts: [
-            {
-              host: '$HOME/.config/gcloud/application_default_credentials.json',
-              target: '$HOME/.config/gcloud/application_default_credentials.json',
-              ro: true,
-            },
-          ],
+      mounts: [
+        {
+          host: '$HOME/.config/gcloud/application_default_credentials.json',
+          target: '$HOME/.config/gcloud/application_default_credentials.json',
+          ro: true,
+        },
+      ],
+    };
+    vi.mocked(window.getConfigurationValue).mockResolvedValue({
+      defaultAgent: 'claude',
+      defaultAgentSettings: {
+        claude: {
+          defaultModel: { providerId: 'claude', connectionId: 'conn-0', label: 'claude-sonnet-4' },
+          workspaceConfiguration,
         },
       },
-    },
+    });
+
+    render(AgentWorkspaceCreate);
+    await clickCreate();
+
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: 'claude', workspaceConfiguration }),
+    );
   });
-  setProviders([mockAnthropicProvider]);
 
-  render(AgentWorkspaceCreate);
+  test('Expect workspaceConfiguration undefined when no settings for selected agent', async () => {
+    vi.mocked(window.getConfigurationValue).mockResolvedValue({
+      defaultAgent: 'opencode',
+      defaultAgentSettings: {
+        opencode: { defaultModel: { providerId: 'claude', connectionId: 'conn-0', label: 'claude-sonnet-4' } },
+        claude: { workspaceConfiguration: { environment: [{ name: 'CLAUDE_CODE_USE_VERTEX', value: '1' }] } },
+      },
+    });
 
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
+    render(AgentWorkspaceCreate);
+    await clickCreate();
+
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: 'opencode', workspaceConfiguration: undefined }),
+    );
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
 
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      agent: 'claude',
-      workspaceConfiguration: {
-        environment: [
-          { name: 'CLAUDE_CODE_USE_VERTEX', value: '1' },
-          { name: 'CLOUD_ML_REGION', value: 'us-east5' },
+  test('Expect workspaceConfiguration follows the agent picked in the Agent card', async () => {
+    vi.mocked(window.getConfigurationValue).mockResolvedValue({
+      defaultAgent: 'opencode',
+      defaultAgentSettings: {
+        claude: { workspaceConfiguration: { environment: [{ name: 'CLAUDE_CODE_USE_VERTEX', value: '1' }] } },
+      },
+    });
+    wizard.draft.view = 'list';
+
+    render(AgentWorkspaceCreate);
+    await vi.waitFor(() => expect(wizard.draft.initialized).toBe(true));
+    await fireEvent.click(within(section('Agent')).getByRole('option', { name: /Claude Code/ }));
+    await clickCreate();
+
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: 'claude',
+        workspaceConfiguration: { environment: [{ name: 'CLAUDE_CODE_USE_VERTEX', value: '1' }] },
+      }),
+    );
+  });
+});
+
+describe('existing configuration', () => {
+  beforeEach(() => {
+    wizard.draft.view = 'list';
+  });
+
+  test('Expect checkAgentWorkspaceConfigExists called when source path is entered', async () => {
+    render(AgentWorkspaceCreate);
+
+    await setSourcePath('/home/user/my-repo');
+
+    await vi.waitFor(() => expect(window.checkAgentWorkspaceConfigExists).toHaveBeenCalledWith('/home/user/my-repo'));
+    expect(screen.queryByText(/existing workspace configuration was found/)).not.toBeInTheDocument();
+  });
+
+  test('Expect global configuration checked on the gateway when no source path', async () => {
+    vi.mocked(window.checkAgentWorkspaceGlobalConfigExists).mockResolvedValue(true);
+    render(AgentWorkspaceCreate);
+
+    await editName('my-sandbox');
+
+    await vi.waitFor(() =>
+      expect(window.checkAgentWorkspaceGlobalConfigExists).toHaveBeenCalledWith('kaiden', 'my-sandbox'),
+    );
+    expect(window.checkAgentWorkspaceConfigExists).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(screen.getByText(/existing workspace configuration was found/)).toBeInTheDocument());
+  });
+
+  test('Expect config-exists notification shown when existing config detected', async () => {
+    vi.mocked(window.checkAgentWorkspaceConfigExists).mockResolvedValue(true);
+    render(AgentWorkspaceCreate);
+
+    await setSourcePath('/home/user/existing-project');
+
+    await vi.waitFor(() => expect(screen.getByText(/existing workspace configuration was found/)).toBeInTheDocument());
+    expect(screen.getByLabelText('Merge with existing')).toBeChecked();
+  });
+
+  test('Expect config-exists cleared when the check fails', async () => {
+    vi.mocked(window.checkAgentWorkspaceConfigExists).mockRejectedValue(new Error('boom'));
+    wizard.draft.configExists = true;
+    render(AgentWorkspaceCreate);
+
+    await setSourcePath('/home/user/my-repo');
+
+    await vi.waitFor(() => expect(wizard.draft.configExists).toBe(false));
+    expect(screen.queryByText(/existing workspace configuration was found/)).not.toBeInTheDocument();
+  });
+
+  test('Expect replaceConfig passed when Replace existing selected', async () => {
+    vi.mocked(window.checkAgentWorkspaceConfigExists).mockResolvedValue(true);
+    render(AgentWorkspaceCreate);
+
+    await setSourcePath('/home/user/existing-project');
+    await vi.waitFor(() => expect(screen.getByLabelText('Replace existing')).toBeInTheDocument());
+    await fireEvent.click(screen.getByLabelText('Replace existing'));
+    await clickCreate();
+
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(expect.objectContaining({ replaceConfig: true }));
+  });
+
+  test('Expect replaceConfig not passed when merging with the existing config', async () => {
+    vi.mocked(window.checkAgentWorkspaceConfigExists).mockResolvedValue(true);
+    render(AgentWorkspaceCreate);
+
+    await setSourcePath('/home/user/existing-project');
+    await vi.waitFor(() => expect(screen.getByLabelText('Merge with existing')).toBeInTheDocument());
+    await clickCreate();
+
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourcePath: '/home/user/existing-project',
+        name: 'existing-project',
+        replaceConfig: undefined,
+      }),
+    );
+  });
+});
+
+describe('folders', () => {
+  beforeEach(() => {
+    wizard.draft.view = 'list';
+    wizard.draft.sourcePath = '/home/user/my-repo';
+  });
+
+  test('Expect browsing for a source folder sets the path and name', async () => {
+    vi.mocked(window.openDialog).mockResolvedValue(['/home/user/browsed']);
+    render(AgentWorkspaceCreate);
+
+    await fireEvent.click(within(section('Folders')).getByRole('button', { name: 'Browse for folder' }));
+
+    await vi.waitFor(() => expect(wizard.draft.sourcePath).toBe('/home/user/browsed'));
+    expect(wizard.draft.sessionName).toBe('browsed');
+    expect(window.openDialog).toHaveBeenCalledWith({
+      title: 'Select a working directory',
+      selectors: ['openDirectory'],
+    });
+  });
+
+  test('Expect browse failure displayed', async () => {
+    vi.mocked(window.openDialog).mockRejectedValue(new Error('dialog failed'));
+    render(AgentWorkspaceCreate);
+
+    await fireEvent.click(within(section('Folders')).getByRole('button', { name: 'Browse for folder' }));
+
+    await vi.waitFor(() => expect(toast.error).toHaveBeenCalledWith('Failed to browse for directory: dialog failed'));
+    expect(wizard.draft.sourcePath).toBe('/home/user/my-repo');
+  });
+
+  test('Expect createAgentWorkspace called without mounts when no host filesystem access selected', async () => {
+    render(AgentWorkspaceCreate);
+
+    await clickCreate();
+
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(expect.objectContaining({ mounts: undefined }));
+  });
+
+  test('Expect custom mounts section shown when Custom Paths selected', async () => {
+    render(AgentWorkspaceCreate);
+
+    await fireEvent.click(screen.getByRole('radio', { name: 'Use Custom Paths' }));
+
+    expect(screen.getByPlaceholderText('/path/on/host')).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText('Leave empty to place the folder at /sandbox/<folder name>'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add Another Mount' })).toBeInTheDocument();
+  });
+
+  test('Expect createAgentWorkspace called with custom mounts when Custom Paths selected', async () => {
+    render(AgentWorkspaceCreate);
+
+    await fireEvent.click(screen.getByRole('radio', { name: 'Use Custom Paths' }));
+    await fireEvent.input(screen.getByLabelText('Host path 1'), { target: { value: '/home/user/data' } });
+    await fireEvent.input(screen.getByLabelText('Target path 1'), { target: { value: '/workspace/data' } });
+    expect(screen.getByRole('list', { name: 'Sandbox security' })).toHaveTextContent('Filesystem 2 folders');
+    await clickCreate();
+
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ mounts: [{ host: '/home/user/data', target: '/workspace/data', ro: false }] }),
+    );
+  });
+
+  test('Expect createAgentWorkspace called with ro:true when read-only toggled for custom mount', async () => {
+    render(AgentWorkspaceCreate);
+
+    await fireEvent.click(screen.getByRole('radio', { name: 'Use Custom Paths' }));
+    await fireEvent.input(screen.getByLabelText('Host path 1'), { target: { value: '/home/user/data' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Toggle read-only for mount 1' }));
+    await clickCreate();
+
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ mounts: [{ host: '/home/user/data', target: 'data', ro: true }] }),
+    );
+  });
+
+  test.each([
+    { host: '/home/user/configs', target: 'configs' },
+    { host: '/home/user/data/', target: 'data' },
+    { host: 'C:\\Users\\alice\\configs', target: 'configs' },
+  ])('Expect custom mount $host defaults target to $target', async ({ host, target }) => {
+    render(AgentWorkspaceCreate);
+
+    await fireEvent.click(screen.getByRole('radio', { name: 'Use Custom Paths' }));
+    await fireEvent.input(screen.getByLabelText('Host path 1'), { target: { value: host } });
+    await clickCreate();
+
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ mounts: [{ host, target, ro: false }] }),
+    );
+  });
+
+  test('Expect mounts added, browsed and removed', async () => {
+    vi.mocked(window.openDialog).mockResolvedValue(['/home/user/browsed']);
+    render(AgentWorkspaceCreate);
+
+    await fireEvent.click(screen.getByRole('radio', { name: 'Use Custom Paths' }));
+    await fireEvent.input(screen.getByLabelText('Host path 1'), { target: { value: '/home/user/first' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Add Another Mount' }));
+    await fireEvent.click(within(section('Folders')).getAllByRole('button', { name: 'Browse for directory' })[1]);
+    await vi.waitFor(() => expect(screen.getByLabelText('Host path 2')).toHaveValue('/home/user/browsed'));
+    await fireEvent.click(screen.getByRole('button', { name: 'Remove mount 1' }));
+    await clickCreate();
+
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ mounts: [{ host: '/home/user/browsed', target: 'browsed', ro: false }] }),
+    );
+  });
+});
+
+describe('reachable hostnames', () => {
+  beforeEach(() => {
+    wizard.draft.view = 'list';
+    wizard.draft.sourcePath = '/home/user/my-repo';
+  });
+
+  function hostList(): HTMLElement {
+    return within(section('Reachable hostnames')).getByRole('list', { name: 'Reachable hostnames' });
+  }
+
+  test('Expect registry hosts listed by default', () => {
+    render(AgentWorkspaceCreate);
+
+    expect(within(hostList()).getByText('registry.npmjs.org')).toBeInTheDocument();
+    expect(within(hostList()).getByText('pypi.python.org')).toBeInTheDocument();
+  });
+
+  test('Expect host added with the input and Enter sent in the network configuration', async () => {
+    render(AgentWorkspaceCreate);
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'Add hostname' }), 'api.example.com{Enter}');
+
+    expect(within(hostList()).getByText('api.example.com')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Add hostname' })).toHaveValue('');
+    await clickCreate();
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        network: { mode: 'deny', hosts: ['registry.npmjs.org', 'pypi.python.org', 'api.example.com'] },
+      }),
+    );
+  });
+
+  test('Expect duplicate host not added twice', async () => {
+    render(AgentWorkspaceCreate);
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'Add hostname' }), 'pypi.python.org{Enter}');
+
+    expect(wizard.draft.hostsByMode['registries']).toEqual(['registry.npmjs.org', 'pypi.python.org']);
+  });
+
+  test('Expect removed host not sent in the network configuration', async () => {
+    render(AgentWorkspaceCreate);
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Remove registry.npmjs.org' }));
+
+    expect(within(hostList()).queryByText('registry.npmjs.org')).not.toBeInTheDocument();
+    await clickCreate();
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ network: { mode: 'deny', hosts: ['pypi.python.org'] } }),
+    );
+  });
+
+  test('Expect deny network without hosts when every host is removed', async () => {
+    render(AgentWorkspaceCreate);
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Remove registry.npmjs.org' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Remove pypi.python.org' }));
+
+    expect(within(hostList()).getByText('No host is reachable.')).toBeInTheDocument();
+    await clickCreate();
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ network: { mode: 'deny', hosts: undefined } }),
+    );
+  });
+
+  test('Expect hosts count shown on the blueprint card', async () => {
+    wizard.draft.view = 'blueprint';
+    render(AgentWorkspaceCreate);
+
+    expect(screen.getByText('2 hosts')).toBeInTheDocument();
+  });
+});
+
+describe('tools and credentials', () => {
+  beforeEach(() => {
+    wizard.draft.view = 'list';
+    wizard.draft.sourcePath = '/home/user/my-repo';
+  });
+
+  test('Expect empty states and management links', async () => {
+    render(AgentWorkspaceCreate);
+
+    expect(within(section('Agent')).getByText('No skills available yet.')).toBeInTheDocument();
+    expect(within(section('MCP servers')).getByText('No knowledge bases available yet.')).toBeInTheDocument();
+    await vi.waitFor(() =>
+      expect(within(section('Credentials')).getByText('No secrets in your vault yet.')).toBeInTheDocument(),
+    );
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Manage Skills' }));
+    expect(handleNavigation).toHaveBeenCalledWith({ page: 'skills' });
+    await fireEvent.click(screen.getByRole('button', { name: 'Open Vault' }));
+    expect(handleNavigation).toHaveBeenCalledWith({ page: 'secret-vault' });
+    await fireEvent.click(screen.getByRole('button', { name: 'Manage Knowledges' }));
+    expect(handleNavigation).toHaveBeenCalledWith({ page: 'rag-environments' });
+  });
+
+  test('Expect only enabled skills listed with their group', () => {
+    vi.mocked(skillsStore).skillInfos = writable<SkillInfo[]>([
+      { name: 'kubernetes', description: 'Deploy', path: '/skills/kubernetes', enabled: true, managed: false },
+      { name: 'code-review', description: 'Review', path: '/skills/code-review', enabled: true, managed: true },
+      { name: 'disabled', description: 'Off', path: '/skills/disabled', enabled: false, managed: true },
+    ]);
+
+    render(AgentWorkspaceCreate);
+
+    const agent = within(section('Agent'));
+    expect(agent.getByText('kubernetes')).toBeInTheDocument();
+    expect(agent.getByText('code-review')).toBeInTheDocument();
+    expect(agent.queryByText('disabled')).not.toBeInTheDocument();
+    expect(agent.getByText('Pre-built')).toBeInTheDocument();
+    expect(agent.getByText('Custom')).toBeInTheDocument();
+  });
+
+  test('Expect createAgentWorkspace called with selected enabled skill paths', async () => {
+    vi.mocked(skillsStore).skillInfos = writable<SkillInfo[]>([
+      {
+        name: 'kubernetes',
+        description: 'Deploy',
+        path: '/home/user/.kaiden/skills/kubernetes',
+        enabled: true,
+        managed: false,
+      },
+      {
+        name: 'code-review',
+        description: 'Review',
+        path: '/home/user/.kaiden/skills/code-review',
+        enabled: true,
+        managed: true,
+      },
+      {
+        name: 'disabled',
+        description: 'Off',
+        path: '/home/user/.kaiden/skills/disabled',
+        enabled: false,
+        managed: true,
+      },
+    ]);
+    wizard.draft.selectedSkillIds = ['kubernetes', 'code-review', 'disabled'];
+
+    render(AgentWorkspaceCreate);
+    await fireEvent.click(within(section('Agent')).getByRole('button', { name: 'code-review' }));
+    await clickCreate();
+
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skills: ['/home/user/.kaiden/skills/kubernetes', '/home/user/.kaiden/skills/disabled'],
+      }),
+    );
+  });
+
+  test('Expect createAgentWorkspace called without skills, secrets, mcp nor addons when none available', async () => {
+    render(AgentWorkspaceCreate);
+
+    await clickCreate();
+
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ skills: undefined, secrets: undefined, mcp: undefined, addons: undefined }),
+    );
+  });
+
+  test('Expect knowledge bases listed with provider display name and source count', () => {
+    setProviders([{ id: 'milvus', name: 'Milvus' } as ProviderInfo]);
+    vi.mocked(ragStore).ragEnvironments = writable<RagEnvironment[]>([
+      {
+        name: 'kubernetes-knowledges',
+        ragConnection: { name: 'my-connection', providerId: 'milvus' },
+        chunkerConnection: { id: 'docling', providerId: 'milvus' },
+        mcpServer: { id: 'kb-mcp', name: 'kb-mcp' } as MCPRemoteServerInfo,
+        files: [
+          { path: '/docs/k8s.md', status: 'indexed' },
+          { path: '/docs/pods.md', status: 'indexed' },
         ],
-        mounts: [
-          {
-            host: '$HOME/.config/gcloud/application_default_credentials.json',
-            target: '$HOME/.config/gcloud/application_default_credentials.json',
-            ro: true,
+      },
+    ]);
+
+    render(AgentWorkspaceCreate);
+
+    const mcp = within(section('MCP servers'));
+    expect(mcp.getByText('kubernetes-knowledges')).toBeInTheDocument();
+    expect(mcp.getByText('Milvus · 2 sources')).toBeInTheDocument();
+  });
+
+  test('Expect createAgentWorkspace splits MCP servers into remote and command entries', async () => {
+    vi.mocked(mcpStore).mcpRemoteServerInfos = writable<MCPRemoteServerInfo[]>([
+      {
+        id: 'mcp-remote',
+        name: 'GitHub MCP',
+        description: 'Repos & PRs',
+        url: 'https://mcp.github.com/sse',
+        setupType: 'remote',
+        infos: { internalProviderId: 'p1', serverId: 's1', remoteId: 1 },
+        tools: { 'list-repos': {} },
+      },
+      {
+        id: 'mcp-pkg',
+        name: 'NPM MCP',
+        description: 'Node MCP server',
+        url: '',
+        setupType: 'package',
+        commandSpec: { command: 'npx', args: ['@example/mcp@1.0.0'] },
+        infos: { internalProviderId: 'p2', serverId: 's2', remoteId: 0 },
+        tools: {},
+      },
+    ]);
+    wizard.draft.selectedMcpIds = ['mcp-remote', 'mcp-pkg'];
+    wizard.draft.view = 'blueprint';
+
+    render(AgentWorkspaceCreate);
+    expect(screen.getByText('GitHub MCP, NPM MCP')).toBeInTheDocument();
+    await clickCreate();
+
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mcp: {
+          servers: [{ name: 'GitHub MCP', url: 'https://mcp.github.com/sse' }],
+          commands: [{ name: 'NPM MCP', command: 'npx', args: ['@example/mcp@1.0.0'], env: undefined }],
+        },
+      }),
+    );
+  });
+
+  test('Expect secrets listed from the selected gateway', async () => {
+    setGateways([gateway('local', true), gateway('remote', false)]);
+    vi.mocked(window.listSecrets).mockImplementation(async gatewayName =>
+      gatewayName === 'remote'
+        ? [
+            { name: 'github-token', type: 'github', description: 'Personal access token', gateway: 'remote' },
+            { name: 'anthropic-key', type: 'anthropic', description: 'API key', gateway: 'remote' },
+          ]
+        : [{ name: 'local-only-secret', type: 'generic', description: 'Local only', gateway: 'local' }],
+    );
+
+    render(AgentWorkspaceCreate);
+    await fireEvent.change(screen.getByRole('combobox'), { target: { value: 'remote' } });
+
+    const credentials = within(section('Credentials'));
+    await vi.waitFor(() => expect(credentials.getByText('github-token')).toBeInTheDocument());
+    expect(credentials.getByText('anthropic-key')).toBeInTheDocument();
+    expect(credentials.getByText('github · Personal access token')).toBeInTheDocument();
+    expect(credentials.queryByText('local-only-secret')).not.toBeInTheDocument();
+    expect(window.listSecrets).toHaveBeenCalledWith('local');
+    expect(window.listSecrets).toHaveBeenLastCalledWith('remote');
+  });
+
+  test('Expect unknown secret ids dropped and selected secrets sent', async () => {
+    vi.mocked(window.listSecrets).mockResolvedValue([
+      { name: 'github-token', type: 'github', gateway: 'kaiden' },
+      { name: 'anthropic-key', type: 'anthropic', gateway: 'kaiden' },
+    ]);
+    wizard.draft.selectedSecretIds = ['github-token', 'removed-secret'];
+
+    render(AgentWorkspaceCreate);
+
+    await vi.waitFor(() => expect(wizard.draft.selectedSecretIds).toEqual(['github-token']));
+    await clickCreate();
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(expect.objectContaining({ secrets: ['github-token'] }));
+  });
+
+  test('Expect Create disabled while gateway secrets load', async () => {
+    let resolveSecrets: (secrets: GatewaySecretInfo[]) => void = () => {};
+    vi.mocked(window.listSecrets).mockImplementation(
+      () =>
+        new Promise(resolve => {
+          resolveSecrets = resolve;
+        }),
+    );
+    wizard.draft.selectedSecretIds = ['remote-secret'];
+
+    render(AgentWorkspaceCreate);
+
+    await vi.waitFor(() => expect(wizard.draft.initialized).toBe(true));
+    expect(createButton()).toBeDisabled();
+
+    resolveSecrets([{ name: 'remote-secret', type: 'generic', gateway: 'kaiden' }]);
+
+    await waitFor(() => expect(createButton()).toBeEnabled());
+    expect(wizard.draft.selectedSecretIds).toEqual(['remote-secret']);
+  });
+
+  test('Expect secret selection cleared when listing secrets fails', async () => {
+    vi.mocked(window.listSecrets).mockRejectedValue(new Error('gateway down'));
+    wizard.draft.selectedSecretIds = ['github-token'];
+
+    render(AgentWorkspaceCreate);
+
+    await vi.waitFor(() => expect(wizard.draft.selectedSecretIds).toEqual([]));
+    await waitFor(() => expect(createButton()).toBeEnabled());
+  });
+});
+
+describe('add-ons', () => {
+  beforeEach(() => {
+    vi.mocked(agentsStore).agentInfos = writable<AgentInfo[]>([
+      {
+        id: 'opencode',
+        name: 'OpenCode',
+        description: 'Open-source agent.',
+        command: 'opencode',
+        destinationSkillsFolder: '/home/test/.opencode/skills',
+        supportedModelTypes: [{ name: 'anthropic' }],
+        addonImages: ['quay.io/kaiden/opencode:1'],
+      },
+    ]);
+    vi.mocked(addonsStore).addons = writable<Addon[]>([
+      {
+        id: 'kaiden.opencode',
+        name: 'opencode',
+        displayName: 'OpenCode CLI',
+        publisher: { name: 'kaiden', displayName: 'Kaiden' },
+        ociImage: 'quay.io/kaiden/opencode:1',
+      },
+      {
+        id: 'kaiden.playwright',
+        name: 'playwright',
+        displayName: 'Playwright',
+        version: '1.50',
+        description: 'Browser automation',
+        category: 'Testing',
+        publisher: { name: 'kaiden', displayName: 'Kaiden' },
+        ociImage: 'quay.io/kaiden/playwright:1',
+      },
+    ]);
+    wizard.draft.sourcePath = '/home/user/my-repo';
+  });
+
+  test('Expect addons provided by an agent hidden and selected addons sent', async () => {
+    wizard.draft.view = 'list';
+    render(AgentWorkspaceCreate);
+
+    const addonsSection = within(section('Add-ons'));
+    expect(addonsSection.queryByText('OpenCode CLI')).not.toBeInTheDocument();
+    expect(addonsSection.getByText('Browser automation')).toBeInTheDocument();
+
+    await fireEvent.click(addonsSection.getByRole('button', { name: 'Playwright 1.50' }));
+    await clickCreate();
+
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ addons: ['kaiden.playwright'] }),
+    );
+  });
+
+  test('Expect selected addons shown as chips on the blueprint card', () => {
+    wizard.draft.selectedAddonIds = ['kaiden.playwright'];
+    render(AgentWorkspaceCreate);
+
+    expect(screen.getByText('Playwright 1.50')).toBeInTheDocument();
+  });
+});
+
+describe('create', () => {
+  test('Expect createAgentWorkspace called with the full options then navigates', async () => {
+    vi.mocked(window.getConfigurationValue).mockResolvedValue({
+      defaultAgent: 'claude',
+      defaultAgentSettings: {
+        claude: {
+          workspaceConfiguration: {
+            environment: [{ name: 'CLAUDE_CODE_USE_VERTEX', value: '1' }],
+            mounts: [{ host: '~/.config/gcloud/adc.json', target: '~/.config/gcloud/adc.json', ro: true }],
           },
-        ],
-      },
-    }),
-  );
-});
-
-test('Expect workspaceConfiguration undefined when no settings for selected agent', async () => {
-  vi.mocked(window.getConfigurationValue).mockResolvedValue({
-    defaultAgent: 'opencode',
-    defaultAgentSettings: {
-      opencode: {
-        defaultModel: { providerId: 'claude', connectionId: 'conn-0', label: 'claude-sonnet-4' },
-      },
-    },
-  });
-  setProviders([mockAnthropicProvider]);
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      agent: 'opencode',
-      workspaceConfiguration: undefined,
-    }),
-  );
-});
-
-test('Expect workspaceConfiguration looked up by agent id directly', async () => {
-  vi.mocked(window.getConfigurationValue).mockResolvedValue({
-    defaultAgent: 'claude',
-    defaultAgentSettings: {
-      claude: {
-        workspaceConfiguration: {
-          environment: [{ name: 'CLAUDE_CODE_USE_VERTEX', value: '1' }],
         },
       },
-    },
-  });
-  setProviders([mockAnthropicProvider]);
+    });
+    vi.mocked(skillsStore).skillInfos = writable<SkillInfo[]>([
+      { name: 'kubernetes', description: 'Deploy', path: '/skills/kubernetes', enabled: true, managed: false },
+    ]);
+    vi.mocked(mcpStore).mcpRemoteServerInfos = writable<MCPRemoteServerInfo[]>([
+      {
+        id: 'mcp-remote',
+        name: 'GitHub MCP',
+        description: 'Repos & PRs',
+        url: 'https://mcp.github.com/sse',
+        setupType: 'remote',
+        infos: { internalProviderId: 'p1', serverId: 's1', remoteId: 1 },
+        tools: {},
+      },
+    ]);
+    vi.mocked(addonsStore).addons = writable<Addon[]>([
+      {
+        id: 'kaiden.playwright',
+        name: 'playwright',
+        displayName: 'Playwright',
+        publisher: { name: 'kaiden', displayName: 'Kaiden' },
+        ociImage: 'quay.io/kaiden/playwright:1',
+      },
+    ]);
+    vi.mocked(window.listSecrets).mockResolvedValue([{ name: 'github-token', type: 'github', gateway: 'kaiden' }]);
+    wizard.draft.sourcePath = '/home/user/my-repo';
+    wizard.draft.selectedSkillIds = ['kubernetes'];
+    wizard.draft.selectedMcpIds = ['mcp-remote'];
+    wizard.draft.selectedSecretIds = ['github-token'];
+    wizard.draft.selectedAddonIds = ['kaiden.playwright'];
+    wizard.draft.selectedFileAccess = 'custom';
+    wizard.draft.customMounts = [{ host: '/data', target: '', ro: true }];
 
-  render(AgentWorkspaceCreate);
+    render(AgentWorkspaceCreate);
+    await clickCreate();
 
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith({
+      sourcePath: '/home/user/my-repo',
       agent: 'claude',
+      image: undefined,
+      model: 'anthropic::claude-sonnet-4::',
+      gateway: 'kaiden',
+      name: 'my-repo',
+      description: undefined,
+      skills: ['/skills/kubernetes'],
+      network: { mode: 'deny', hosts: ['registry.npmjs.org', 'pypi.python.org'] },
+      secrets: ['github-token'],
+      mounts: [{ host: '/data', target: 'data', ro: true }],
+      mcp: { servers: [{ name: 'GitHub MCP', url: 'https://mcp.github.com/sse' }] },
       workspaceConfiguration: {
         environment: [{ name: 'CLAUDE_CODE_USE_VERTEX', value: '1' }],
+        mounts: [{ host: '$HOME/.config/gcloud/adc.json', target: '$HOME/.config/gcloud/adc.json', ro: true }],
       },
-    }),
-  );
-});
-
-test('Expect tilde mount paths normalized to $HOME in workspaceConfiguration', async () => {
-  vi.mocked(window.getConfigurationValue).mockResolvedValue({
-    defaultAgent: 'claude',
-    defaultAgentSettings: {
-      claude: {
-        workspaceConfiguration: {
-          mounts: [
-            {
-              host: '~/.config/gcloud/application_default_credentials.json',
-              target: '~/.config/gcloud/application_default_credentials.json',
-              ro: true,
-            },
-          ],
-        },
-      },
-    },
-  });
-  setProviders([mockAnthropicProvider]);
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      workspaceConfiguration: {
-        mounts: [
-          {
-            host: '$HOME/.config/gcloud/application_default_credentials.json',
-            target: '$HOME/.config/gcloud/application_default_credentials.json',
-            ro: true,
-          },
-        ],
-      },
-    }),
-  );
-});
-
-async function navigateToFileSystemStep(): Promise<void> {
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  // Workspace → Agent & Model → Tools & Secrets → File System
-  for (let i = 0; i < 3; i++) {
-    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  }
-}
-
-test('Expect createAgentWorkspace called without mounts when workspace (default) file access selected', async () => {
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      mounts: undefined,
-    }),
-  );
-});
-
-test('Expect createAgentWorkspace called with custom mounts when Custom Paths selected', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToFileSystemStep();
-  await fireEvent.click(screen.getByRole('radio', { name: 'Use Custom Paths' }));
-
-  await fireEvent.input(screen.getByLabelText('Host path 1'), {
-    target: { value: '/home/user/data' },
-  });
-  await fireEvent.input(screen.getByLabelText('Target path 1'), {
-    target: { value: '/workspace/data' },
-  });
-
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      mounts: [{ host: '/home/user/data', target: '/workspace/data', ro: false }],
-    }),
-  );
-});
-
-test('Expect createAgentWorkspace called with ro:true when read-only toggled for custom mount', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToFileSystemStep();
-  await fireEvent.click(screen.getByRole('radio', { name: 'Use Custom Paths' }));
-
-  await fireEvent.input(screen.getByLabelText('Host path 1'), {
-    target: { value: '/home/user/data' },
-  });
-  await fireEvent.click(screen.getByRole('button', { name: 'Toggle read-only for mount 1' }));
-
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      mounts: [{ host: '/home/user/data', target: 'data', ro: true }],
-    }),
-  );
-});
-
-test('Expect custom mount defaults target to the host folder name when target is empty', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToFileSystemStep();
-  await fireEvent.click(screen.getByRole('radio', { name: 'Use Custom Paths' }));
-
-  await fireEvent.input(screen.getByLabelText('Host path 1'), {
-    target: { value: '/home/user/configs' },
-  });
-
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      mounts: [{ host: '/home/user/configs', target: 'configs', ro: false }],
-    }),
-  );
-});
-
-test('Expect custom mount strips trailing separators when deriving target from host', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToFileSystemStep();
-  await fireEvent.click(screen.getByRole('radio', { name: 'Use Custom Paths' }));
-
-  await fireEvent.input(screen.getByLabelText('Host path 1'), {
-    target: { value: '/home/user/data/' },
-  });
-
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      mounts: [{ host: '/home/user/data/', target: 'data', ro: false }],
-    }),
-  );
-});
-
-test('Expect custom mount derives correct basename from Windows backslash host path', async () => {
-  render(AgentWorkspaceCreate);
-
-  await navigateToFileSystemStep();
-  await fireEvent.click(screen.getByRole('radio', { name: 'Use Custom Paths' }));
-
-  await fireEvent.input(screen.getByLabelText('Host path 1'), {
-    target: { value: 'C:\\Users\\alice\\configs' },
-  });
-
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      mounts: [{ host: 'C:\\Users\\alice\\configs', target: 'configs', ro: false }],
-    }),
-  );
-});
-
-test('Expect checkAgentWorkspaceConfigExists called when source path is entered', async () => {
-  vi.mocked(window.checkAgentWorkspaceConfigExists).mockResolvedValue(false);
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-
-  await vi.waitFor(() => {
-    expect(window.checkAgentWorkspaceConfigExists).toHaveBeenCalledWith('/home/user/my-repo');
-  });
-});
-
-test('Expect config-exists notification shown when existing config detected', async () => {
-  vi.mocked(window.checkAgentWorkspaceConfigExists).mockResolvedValue(true);
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/existing-project' },
-  });
-
-  await vi.waitFor(() => {
-    expect(screen.getByText(/existing workspace configuration was found/)).toBeInTheDocument();
-  });
-  expect(screen.getByRole('button', { name: 'Start workspace as-is' })).toBeInTheDocument();
-});
-
-test('Expect config-exists notification not shown when no existing config', async () => {
-  vi.mocked(window.checkAgentWorkspaceConfigExists).mockResolvedValue(false);
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/new-project' },
-  });
-
-  await vi.waitFor(() => {
-    expect(window.checkAgentWorkspaceConfigExists).toHaveBeenCalled();
-  });
-  expect(screen.queryByText(/existing workspace configuration was found/)).not.toBeInTheDocument();
-});
-
-test('Expect Start workspace as-is calls createAgentWorkspace with model', async () => {
-  vi.mocked(window.checkAgentWorkspaceConfigExists).mockResolvedValue(true);
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/existing-project' },
-  });
-
-  await vi.waitFor(() => {
-    expect(screen.getByRole('button', { name: 'Start workspace as-is' })).toBeInTheDocument();
-  });
-
-  await fireEvent.click(screen.getByRole('button', { name: 'Start workspace as-is' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      sourcePath: '/home/user/existing-project',
-      agent: 'opencode',
-      model: 'anthropic::claude-sonnet-4::',
-      name: 'existing-project',
-    }),
-  );
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.not.objectContaining({
-      replaceConfig: expect.anything(),
-    }),
-  );
-});
-
-test('Expect Start workspace as-is button disabled when no model available', async () => {
-  setProviders([]);
-  vi.mocked(window.checkAgentWorkspaceConfigExists).mockResolvedValue(true);
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/existing-project' },
-  });
-
-  await vi.waitFor(() => {
-    expect(screen.getByRole('button', { name: 'Start workspace as-is' })).toBeInTheDocument();
-  });
-
-  expect(screen.getByRole('button', { name: 'Start workspace as-is' })).toBeDisabled();
-});
-
-test('Expect startWorkspace passes replaceConfig when configAction is replace and config exists', async () => {
-  vi.mocked(window.checkAgentWorkspaceConfigExists).mockResolvedValue(true);
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/existing-project' },
-  });
-
-  await vi.waitFor(() => {
-    expect(screen.getByLabelText('Replace existing')).toBeInTheDocument();
-  });
-
-  await fireEvent.click(screen.getByLabelText('Replace existing'));
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
-      replaceConfig: true,
-    }),
-  );
-});
-
-test('Expect startWorkspace does not pass replaceConfig when configAction is merge', async () => {
-  vi.mocked(window.checkAgentWorkspaceConfigExists).mockResolvedValue(true);
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/existing-project' },
-  });
-
-  await vi.waitFor(() => {
-    expect(screen.getByLabelText('Merge with existing')).toBeInTheDocument();
-  });
-
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
-
-  expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-    expect.objectContaining({
       replaceConfig: undefined,
-    }),
-  );
-});
-
-test('Expect draft preserved when startAsIs fails', async () => {
-  vi.mocked(window.createAgentWorkspace).mockRejectedValue(new Error('creation failed'));
-  vi.mocked(window.checkAgentWorkspaceConfigExists).mockResolvedValue(true);
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/existing-project' },
+      project: undefined,
+      addons: ['kaiden.playwright'],
+    });
+    expect(handleNavigation).toHaveBeenCalledWith({ page: NavigationPage.AGENT_WORKSPACES });
+    await vi.waitFor(() => expect(wizard.draft.sourcePath).toBe(''));
   });
 
-  await vi.waitFor(() => {
-    expect(screen.getByRole('button', { name: 'Start workspace as-is' })).toBeInTheDocument();
+  test('Expect custom base image sent when set', async () => {
+    wizard.draft.sourcePath = '/home/user/my-repo';
+    wizard.draft.initialized = true;
+    wizard.draft.selectedModel = buildCatalogModels([mockAnthropicProvider])[0];
+    wizard.draft.customImage = ' quay.io/me/image:1 ';
+
+    render(AgentWorkspaceCreate);
+
+    expect(screen.getByText('quay.io/me/image:1')).toBeInTheDocument();
+    await clickCreate();
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(expect.objectContaining({ image: 'quay.io/me/image:1' }));
   });
 
-  wizard.draft.currentStepIndex = 0;
-  await fireEvent.click(screen.getByRole('button', { name: 'Start workspace as-is' }));
+  test('Expect error dialog shown, draft preserved and navigation done when createAgentWorkspace fails', async () => {
+    vi.mocked(window.createAgentWorkspace).mockRejectedValue(new Error('sandbox init failed'));
+    wizard.draft.sourcePath = '/home/user/my-repo';
 
-  expect(wizard.draft.sourcePath).toBe('/home/user/existing-project');
-});
+    render(AgentWorkspaceCreate);
+    await clickCreate();
 
-test('Expect draft preserved when startWorkspace fails', async () => {
-  vi.mocked(window.createAgentWorkspace).mockRejectedValue(new Error('creation failed'));
-  vi.mocked(window.showMessageBox).mockResolvedValue({ response: 0 });
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
-
-  await vi.waitFor(() => {
-    expect(window.showMessageBox).toHaveBeenCalledWith(
-      expect.objectContaining({
+    await vi.waitFor(() =>
+      expect(window.showMessageBox).toHaveBeenCalledWith({
         title: 'Agent Workspace',
         type: 'error',
-        message: expect.stringContaining('creation failed'),
+        message: 'Error while creating workspace: sandbox init failed',
+        buttons: ['OK'],
+      }),
+    );
+    expect(handleNavigation).toHaveBeenCalledWith({ page: NavigationPage.AGENT_WORKSPACES });
+    expect(wizard.draft.sourcePath).toBe('/home/user/my-repo');
+    expect(wizard.draft.sessionName).toBe('my-repo');
+  });
+
+  test.each([{ ctrlKey: true }, { metaKey: true }])('Expect $0 + Enter creates the workspace', async modifier => {
+    wizard.draft.sourcePath = '/home/user/my-repo';
+    render(AgentWorkspaceCreate);
+
+    await waitFor(() => expect(createButton()).toBeEnabled());
+    await fireEvent.keyDown(window, { key: 'Enter', ...modifier });
+
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(expect.objectContaining({ name: 'my-repo' }));
+    expect(handleNavigation).toHaveBeenCalledWith({ page: NavigationPage.AGENT_WORKSPACES });
+  });
+
+  test('Expect Ctrl+Enter ignored while the workspace cannot be created', async () => {
+    render(AgentWorkspaceCreate);
+
+    await vi.waitFor(() => expect(wizard.draft.initialized).toBe(true));
+    await fireEvent.keyDown(window, { key: 'Enter', ctrlKey: true });
+    await fireEvent.keyDown(window, { key: 'Enter' });
+
+    expect(window.createAgentWorkspace).not.toHaveBeenCalled();
+    expect(handleNavigation).not.toHaveBeenCalled();
+  });
+
+  test('Expect Cancel resets the draft and navigates to workspaces', async () => {
+    wizard.draft.sourcePath = '/home/user/my-repo';
+    wizard.draft.view = 'list';
+    render(AgentWorkspaceCreate);
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(wizard.draft.sourcePath).toBe('');
+    expect(wizard.draft.view).toBe('blueprint');
+    expect(handleNavigation).toHaveBeenCalledWith({ page: NavigationPage.AGENT_WORKSPACES });
+    expect(window.createAgentWorkspace).not.toHaveBeenCalled();
+  });
+});
+
+describe('views', () => {
+  test('Expect blueprint view by default with every card', () => {
+    render(AgentWorkspaceCreate);
+
+    expect(screen.getByRole('radio', { name: 'Blueprint' })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('group', { name: 'Sandbox blueprint' })).toBeInTheDocument();
+    for (const label of [
+      'Model',
+      'Agent',
+      'Add-ons',
+      'Base image',
+      'MCP servers',
+      'Folders',
+      'Reachable hostnames',
+      'Credentials',
+    ]) {
+      expect(screen.getByRole('button', { name: `Edit ${label}` })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: `Configure ${label}` })).toBeInTheDocument();
+    }
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  test('Expect list view renders every editor', async () => {
+    render(AgentWorkspaceCreate);
+
+    await fireEvent.click(screen.getByRole('radio', { name: 'List' }));
+
+    expect(wizard.draft.view).toBe('list');
+    expect(screen.getByRole('radio', { name: 'List' })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.queryByRole('group', { name: 'Sandbox blueprint' })).not.toBeInTheDocument();
+    expect(within(section('Folders')).getByPlaceholderText('/path/to/project')).toBeInTheDocument();
+    expect(within(section('Reachable hostnames')).getByRole('textbox', { name: 'Add hostname' })).toBeInTheDocument();
+    expect(within(section('Agent')).getByRole('listbox', { name: 'Coding agent' })).toBeInTheDocument();
+  });
+
+  test('Expect YAML view previews the create options', async () => {
+    wizard.draft.sourcePath = '/home/user/my-repo';
+    render(AgentWorkspaceCreate);
+    await vi.waitFor(() => expect(wizard.draft.initialized).toBe(true));
+
+    await fireEvent.click(screen.getByRole('radio', { name: 'YAML' }));
+
+    expect(wizard.draft.view).toBe('yaml');
+    expect(screen.queryByRole('group', { name: 'Sandbox blueprint' })).not.toBeInTheDocument();
+    expect(MonacoEditor).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        content: expect.stringContaining('name: my-repo'),
+        language: 'yaml',
+        readOnly: true,
       }),
     );
   });
 
-  expect(wizard.draft.sourcePath).toBe('/home/user/my-repo');
-  expect(wizard.draft.sessionName).toBe('my-repo');
-});
+  test('Expect card popover opened by its edit button and closed by Escape', async () => {
+    render(AgentWorkspaceCreate);
 
-test('Expect error dialog shown when createAgentWorkspace fails from Start Workspace button', async () => {
-  vi.mocked(window.createAgentWorkspace).mockRejectedValue(new Error('sandbox init failed'));
-  vi.mocked(window.showMessageBox).mockResolvedValue({ response: 0 });
+    await fireEvent.click(screen.getByRole('button', { name: 'Edit Folders' }));
 
-  render(AgentWorkspaceCreate);
+    const dialog = screen.getByRole('dialog', { name: 'Folders' });
+    expect(within(dialog).getByPlaceholderText('/path/to/project')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit Folders' })).toHaveAttribute('aria-expanded', 'true');
 
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
+    await fireEvent.keyDown(dialog, { key: 'Escape' });
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
-  for (let i = 0; i < wizardStepCount - 1; i++) {
-    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  }
+  test('Expect edit button toggles the card popover', async () => {
+    render(AgentWorkspaceCreate);
 
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Edit Credentials' }));
+    expect(screen.getByRole('dialog', { name: 'Credentials' })).toBeInTheDocument();
 
-  await vi.waitFor(() => {
-    expect(window.showMessageBox).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: 'Agent Workspace',
-        type: 'error',
-        message: expect.stringContaining('sandbox init failed'),
-      }),
-    );
-  });
-});
-
-test('Expect navigation still called when startAsIs fails', async () => {
-  vi.mocked(window.createAgentWorkspace).mockRejectedValue(new Error('creation failed'));
-  vi.mocked(window.checkAgentWorkspaceConfigExists).mockResolvedValue(true);
-
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/existing-project' },
+    await fireEvent.click(screen.getByRole('button', { name: 'Edit Credentials' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
-  await vi.waitFor(() => {
-    expect(screen.getByRole('button', { name: 'Start workspace as-is' })).toBeInTheDocument();
+  test('Expect blueprint dot opens its card and only one popover is open', async () => {
+    render(AgentWorkspaceCreate);
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Configure Model' }));
+    expect(screen.getByRole('dialog', { name: 'Model' })).toBeInTheDocument();
+
+    await fireEvent.keyDown(screen.getByRole('button', { name: 'Configure Reachable hostnames' }), { key: 'Enter' });
+
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    expect(screen.getByRole('dialog', { name: 'Reachable hostnames' })).toBeInTheDocument();
   });
 
-  await fireEvent.click(screen.getByRole('button', { name: 'Start workspace as-is' }));
+  test('Expect switching view closes the open popover', async () => {
+    render(AgentWorkspaceCreate);
 
-  await vi.waitFor(() => {
-    expect(handleNavigation).toHaveBeenCalledWith({ page: 'agent-workspaces' });
-  });
-});
+    await fireEvent.click(screen.getByRole('button', { name: 'Edit Add-ons' }));
+    expect(screen.getByRole('dialog', { name: 'Add-ons' })).toBeInTheDocument();
 
-test('Expect navigation still called when startWorkspace fails', async () => {
-  vi.mocked(window.createAgentWorkspace).mockRejectedValue(new Error('creation failed'));
-  vi.mocked(window.showMessageBox).mockResolvedValue({ response: 0 });
+    await fireEvent.click(screen.getByRole('radio', { name: 'List' }));
+    await fireEvent.click(screen.getByRole('radio', { name: 'Blueprint' }));
 
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  test('Expect editing in a popover updates the card value', async () => {
+    render(AgentWorkspaceCreate);
 
-  await vi.waitFor(() => {
-    expect(handleNavigation).toHaveBeenCalledWith({ page: 'agent-workspaces' });
+    await fireEvent.click(screen.getByRole('button', { name: 'Edit Folders' }));
+    await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), { target: { value: '/home/user/my-repo' } });
+
+    expect(screen.getByText('1 mounted · 1 writable')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit workspace name' })).toHaveTextContent('my-repo');
   });
 });
-
-const wizardStepCount = 5;
 
 const sampleProject: WorkspaceProjectInfo = {
   id: 'my-app',
@@ -2105,15 +1519,16 @@ function setProjects(projects: WorkspaceProjectInfo[]): void {
   vi.mocked(workspaceProjectsStore).workspaceProjectInfos = writable<readonly WorkspaceProjectInfo[]>(projects);
 }
 
+async function selectProject(name: RegExp): Promise<void> {
+  await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
+  await fireEvent.click(screen.getByRole('option', { name }));
+}
+
 describe('when projects exist', () => {
   beforeEach(() => {
     setProjects([sampleProject]);
-  });
-
-  test('Expect wizard still has five steps when projects exist', () => {
-    render(AgentWorkspaceCreate);
-
-    expect(screen.getByText(/Step 1 of 5/)).toBeInTheDocument();
+    wizard.draft.view = 'list';
+    vi.mocked(window.listSecrets).mockResolvedValue([{ name: 'github-token', type: 'github', gateway: 'kaiden' }]);
   });
 
   test('project handoff shows the selection and preserves edits when project data changes', async () => {
@@ -2122,61 +1537,53 @@ describe('when projects exist', () => {
 
     expect(screen.getByRole('option', { name: /My App/ })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByPlaceholderText('/path/to/project')).toHaveValue(sampleProject.folder);
-    await fireEvent.input(screen.getByPlaceholderText('e.g., front-refactor'), { target: { value: 'edited-name' } });
+    await editName('edited-name');
     workspaceProjectsStore.workspaceProjectInfos.set([
       { ...sampleProject, name: 'Updated project', folder: '/updated' },
     ]);
 
     await waitFor(() => expect(screen.getByRole('option', { name: /Updated project/ })).toBeVisible());
-    expect(screen.getByPlaceholderText('e.g., front-refactor')).toHaveValue('edited-name');
+    expect(screen.getByRole('button', { name: 'Edit workspace name' })).toHaveTextContent('edited-name');
     expect(screen.getByPlaceholderText('/path/to/project')).toHaveValue(sampleProject.folder);
     expect(wizard.draft.selectedProjectId).toBe(sampleProject.id);
-  });
-
-  test('Expect Saved project accordion visible on workspace step', () => {
-    render(AgentWorkspaceCreate);
-
-    expect(screen.getByRole('button', { name: /Saved project/ })).toBeInTheDocument();
   });
 
   test('Expect project selection cards rendered after expanding accordion', async () => {
     render(AgentWorkspaceCreate);
 
+    expect(screen.queryByRole('option', { name: /My App/ })).not.toBeInTheDocument();
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
 
     expect(screen.getByRole('option', { name: /None/ })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: /My App/ })).toBeInTheDocument();
   });
 
-  test('Expect selecting a project pre-fills source path', async () => {
+  test('Expect selecting a project pre-fills the draft', async () => {
     render(AgentWorkspaceCreate);
 
-    await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
-    await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
+    await selectProject(/My App/);
 
-    expect((screen.getByPlaceholderText('/path/to/project') as HTMLInputElement).value).toBe('/home/user/my-app');
-  });
-
-  test('Expect selecting a project pre-fills session name', async () => {
-    render(AgentWorkspaceCreate);
-
-    await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
-    await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
-
-    expect((screen.getByPlaceholderText('e.g., front-refactor') as HTMLInputElement).value).toBe('my-app');
+    expect(screen.getByPlaceholderText('/path/to/project')).toHaveValue('/home/user/my-app');
+    expect(screen.getByRole('button', { name: 'Edit workspace name' })).toHaveTextContent('my-app');
+    expect(wizard.draft.selectedSkillIds).toEqual(['kubernetes']);
+    expect(wizard.draft.selectedMcpIds).toEqual(['mcp-github']);
+    expect(wizard.draft.selectedSecretIds).toEqual(['github-token']);
+    expect(wizard.draft.selectedNetwork).toBe('blocked');
+    expect(wizard.draft.hostsByMode['blocked']).toEqual(['registry.npmjs.org']);
   });
 
   test('Expect createAgentWorkspace called with project id', async () => {
     render(AgentWorkspaceCreate);
 
-    await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
-    await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+    await selectProject(/My App/);
+    await clickCreate();
 
     expect(window.createAgentWorkspace).toHaveBeenCalledWith(
       expect.objectContaining({
         project: 'my-app',
         sourcePath: '/home/user/my-app',
+        secrets: ['github-token'],
+        network: { mode: 'deny', hosts: ['registry.npmjs.org'] },
       }),
     );
   });
@@ -2184,64 +1591,20 @@ describe('when projects exist', () => {
   test('Expect createAgentWorkspace called without project when None selected', async () => {
     render(AgentWorkspaceCreate);
 
-    await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
-    await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
+    await selectProject(/My App/);
     await fireEvent.click(screen.getByRole('option', { name: /None/ }));
-
-    await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-      target: { value: '/home/user/other-repo' },
-    });
-    await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+    await setSourcePath('/home/user/other-repo');
+    await clickCreate();
 
     expect(window.createAgentWorkspace).toHaveBeenCalledWith(
-      expect.objectContaining({
-        project: undefined,
-      }),
+      expect.objectContaining({ project: undefined, name: 'other-repo' }),
     );
-  });
-
-  test('Expect selecting a project populates draft skill ids', async () => {
-    render(AgentWorkspaceCreate);
-
-    await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
-    await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
-
-    expect(wizard.draft.selectedSkillIds).toEqual(['kubernetes']);
-  });
-
-  test('Expect selecting a project populates draft MCP ids', async () => {
-    render(AgentWorkspaceCreate);
-
-    await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
-    await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
-
-    expect(wizard.draft.selectedMcpIds).toEqual(['mcp-github']);
-  });
-
-  test('Expect selecting a project populates draft secret ids', async () => {
-    render(AgentWorkspaceCreate);
-
-    await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
-    await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
-
-    expect(wizard.draft.selectedSecretIds).toEqual(['github-token']);
-  });
-
-  test('Expect selecting a project maps deny network with custom hosts to blocked mode', async () => {
-    render(AgentWorkspaceCreate);
-
-    await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
-    await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
-
-    expect(wizard.draft.selectedNetwork).toBe('blocked');
-    expect(wizard.draft.hostsByMode['blocked']).toEqual(['registry.npmjs.org']);
   });
 
   test('Expect clearing project resets draft fields', async () => {
     render(AgentWorkspaceCreate);
 
-    await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
-    await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
+    await selectProject(/My App/);
     expect(wizard.draft.selectedProjectId).toBe('my-app');
 
     await fireEvent.click(screen.getByRole('option', { name: /None/ }));
@@ -2249,6 +1612,8 @@ describe('when projects exist', () => {
     expect(wizard.draft.selectedProjectId).toBeUndefined();
     expect(wizard.draft.sourcePath).toBe('');
     expect(wizard.draft.sessionName).toBe('');
+    expect(wizard.draft.selectedNetwork).toBe('registries');
+    expect(wizard.draft.hostsByMode['registries']).toEqual(['registry.npmjs.org', 'pypi.python.org']);
   });
 
   test('Expect clearing project restores all-selected defaults for resources', async () => {
@@ -2262,8 +1627,7 @@ describe('when projects exist', () => {
 
     render(AgentWorkspaceCreate);
 
-    await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
-    await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
+    await selectProject(/My App/);
     expect(wizard.draft.selectedSkillIds).toEqual(['kubernetes']);
     expect(wizard.draft.selectedMcpIds).toEqual(['mcp-github']);
 
@@ -2275,175 +1639,87 @@ describe('when projects exist', () => {
 });
 
 describe('project filesystem mapping', () => {
+  beforeEach(() => {
+    wizard.draft.view = 'list';
+  });
+
   test('Expect allow network maps to registries', async () => {
-    const openNetProject: WorkspaceProjectInfo = {
-      ...sampleProject,
-      id: 'open-net',
-      network: { mode: 'allow' },
-    };
-    wizard.draft.hostsByMode = {
-      ...wizard.draft.hostsByMode,
-      registries: ['stale.example.com'],
-    };
-    setProjects([openNetProject]);
+    wizard.draft.hostsByMode = { ...wizard.draft.hostsByMode, registries: ['stale.example.com'] };
+    setProjects([{ ...sampleProject, id: 'open-net', network: { mode: 'allow' } }]);
     render(AgentWorkspaceCreate);
 
-    await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
-    await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
+    await selectProject(/My App/);
 
     expect(wizard.draft.selectedNetwork).toBe('registries');
     expect(wizard.draft.hostsByMode['registries']).toEqual(['registry.npmjs.org', 'pypi.python.org']);
   });
 
   test('Expect deny network without hosts mapped to blocked mode', async () => {
-    const blockedProject: WorkspaceProjectInfo = {
-      ...sampleProject,
-      id: 'blocked',
-      network: { mode: 'deny' },
-    };
-    setProjects([blockedProject]);
+    setProjects([{ ...sampleProject, id: 'blocked', network: { mode: 'deny' } }]);
     render(AgentWorkspaceCreate);
 
-    await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
-    await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
+    await selectProject(/My App/);
 
     expect(wizard.draft.selectedNetwork).toBe('blocked');
+    expect(screen.getByText('No host is reachable.')).toBeInTheDocument();
   });
 
   test('Expect deny network with registry preset hosts mapped to registries mode', async () => {
-    const registryProject: WorkspaceProjectInfo = {
-      ...sampleProject,
-      id: 'registry-preset',
-      network: { mode: 'deny', hosts: ['registry.npmjs.org', 'pypi.python.org'] },
-    };
-    setProjects([registryProject]);
+    setProjects([
+      {
+        ...sampleProject,
+        id: 'registry-preset',
+        network: { mode: 'deny', hosts: ['registry.npmjs.org', 'pypi.python.org'] },
+      },
+    ]);
     render(AgentWorkspaceCreate);
 
-    await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
-    await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
+    await selectProject(/My App/);
 
     expect(wizard.draft.selectedNetwork).toBe('registries');
     expect(wizard.draft.hostsByMode['registries']).toEqual(['registry.npmjs.org', 'pypi.python.org']);
   });
 
-  test('Expect deny network with custom hosts mapped to blocked mode', async () => {
-    const customHostsProject: WorkspaceProjectInfo = {
-      ...sampleProject,
-      id: 'custom-hosts',
-      network: { mode: 'deny', hosts: ['internal.corp.local'] },
-    };
-    setProjects([customHostsProject]);
+  test('Expect deny network with custom hosts listed and editable in blocked mode', async () => {
+    setProjects([{ ...sampleProject, id: 'custom-hosts', network: { mode: 'deny', hosts: ['internal.corp.local'] } }]);
     render(AgentWorkspaceCreate);
 
-    await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
-    await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
+    await selectProject(/My App/);
 
     expect(wizard.draft.selectedNetwork).toBe('blocked');
-    expect(wizard.draft.hostsByMode['blocked']).toEqual(['internal.corp.local']);
+    const hostList = within(section('Reachable hostnames')).getByRole('list', { name: 'Reachable hostnames' });
+    expect(within(hostList).getByText('internal.corp.local')).toBeInTheDocument();
+    expect(within(hostList).queryByText('registry.npmjs.org')).not.toBeInTheDocument();
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'Add hostname' }), 'api.corp.local{Enter}');
+    await clickCreate();
+
+    expect(window.createAgentWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ network: { mode: 'deny', hosts: ['internal.corp.local', 'api.corp.local'] } }),
+    );
   });
 
-  test('Expect Deny All radio checked on networking step after selecting project with custom hosts', async () => {
-    const customHostsProject: WorkspaceProjectInfo = {
-      ...sampleProject,
-      id: 'custom-hosts',
-      network: { mode: 'deny', hosts: ['internal.corp.local'] },
-    };
-    setProjects([customHostsProject]);
+  test.each([
+    { name: 'home', mounts: [{ host: '$HOME', target: '$HOME', ro: false }] },
+    { name: 'root', mounts: [{ host: '/', target: '/', ro: false }] },
+    { name: 'custom', mounts: [{ host: '/data', target: '/workspace/data', ro: true }] },
+  ])('Expect $name mount mapped to custom file access', async ({ mounts }) => {
+    setProjects([{ ...sampleProject, id: 'mounts', filesystem: { mode: 'custom', mounts } }]);
     render(AgentWorkspaceCreate);
 
-    await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
-    await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
-
-    for (let i = 0; i < 4; i++) {
-      await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-    }
-
-    expect(screen.getByRole('radio', { name: 'Use Deny All' })).toBeChecked();
-    expect(screen.getByRole('radio', { name: 'Use Developer Preset' })).not.toBeChecked();
-  });
-
-  test('Expect Developer Preset radio checked on networking step after selecting project with registry preset', async () => {
-    const registryProject: WorkspaceProjectInfo = {
-      ...sampleProject,
-      id: 'registry-preset',
-      network: { mode: 'deny', hosts: ['registry.npmjs.org', 'pypi.python.org'] },
-    };
-    setProjects([registryProject]);
-    render(AgentWorkspaceCreate);
-
-    await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
-    await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
-
-    for (let i = 0; i < 4; i++) {
-      await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-    }
-
-    expect(screen.getByRole('radio', { name: 'Use Developer Preset' })).toBeChecked();
-    expect(screen.getByRole('radio', { name: 'Use Deny All' })).not.toBeChecked();
-  });
-
-  test('Expect home mount mapped to custom file access', async () => {
-    const homeProject: WorkspaceProjectInfo = {
-      ...sampleProject,
-      id: 'home-mount',
-      filesystem: { mode: 'custom', mounts: [{ host: '$HOME', target: '$HOME', ro: false }] },
-    };
-    setProjects([homeProject]);
-    render(AgentWorkspaceCreate);
-
-    await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
-    await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
+    await selectProject(/My App/);
 
     expect(wizard.draft.selectedFileAccess).toBe('custom');
-    expect(wizard.draft.customMounts).toEqual([{ host: '$HOME', target: '$HOME', ro: false }]);
-  });
-
-  test('Expect root mount mapped to custom file access', async () => {
-    const rootProject: WorkspaceProjectInfo = {
-      ...sampleProject,
-      id: 'root-mount',
-      filesystem: { mode: 'custom', mounts: [{ host: '/', target: '/', ro: false }] },
-    };
-    setProjects([rootProject]);
-    render(AgentWorkspaceCreate);
-
-    await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
-    await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
-
-    expect(wizard.draft.selectedFileAccess).toBe('custom');
-    expect(wizard.draft.customMounts).toEqual([{ host: '/', target: '/', ro: false }]);
-  });
-
-  test('Expect custom mounts mapped to custom file access', async () => {
-    const customProject: WorkspaceProjectInfo = {
-      ...sampleProject,
-      id: 'custom-mounts',
-      filesystem: {
-        mode: 'custom',
-        mounts: [{ host: '/data', target: '/workspace/data', ro: true }],
-      },
-    };
-    setProjects([customProject]);
-    render(AgentWorkspaceCreate);
-
-    await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
-    await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
-
-    expect(wizard.draft.selectedFileAccess).toBe('custom');
-    expect(wizard.draft.customMounts).toEqual([{ host: '/data', target: '/workspace/data', ro: true }]);
+    expect(wizard.draft.customMounts).toEqual(mounts);
+    expect(screen.getByRole('radio', { name: 'Use Custom Paths' })).toBeChecked();
   });
 
   test('Expect empty mounts mapped to workspace file access', async () => {
-    const noMountProject: WorkspaceProjectInfo = {
-      ...sampleProject,
-      id: 'no-mounts',
-      filesystem: { mode: 'project', mounts: [] },
-    };
-    setProjects([noMountProject]);
+    wizard.draft.selectedFileAccess = 'custom';
+    setProjects([{ ...sampleProject, id: 'no-mounts', filesystem: { mode: 'project', mounts: [] } }]);
     render(AgentWorkspaceCreate);
 
-    await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
-    await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
+    await selectProject(/My App/);
 
     expect(wizard.draft.selectedFileAccess).toBe('workspace');
   });

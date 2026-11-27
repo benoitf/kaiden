@@ -18,6 +18,8 @@ interface Props {
   selectedModel?: ModelInfo;
   customImage?: string;
   customImageFieldOpen?: boolean;
+  /** Only render one part of the step. Defaults to `undefined` (all parts). */
+  section?: 'agent' | 'model' | 'image';
 }
 
 let {
@@ -25,6 +27,7 @@ let {
   selectedModel = $bindable(),
   customImage = $bindable(''),
   customImageFieldOpen = $bindable(false),
+  section,
 }: Props = $props();
 
 let filteredAgents = $derived(
@@ -92,6 +95,7 @@ $effect(() => {
 </script>
 
 <div class="flex flex-col gap-6">
+  {#if !section || section === 'agent'}
   <!-- Agent selection -->
   <div>
     <h3 class="text-base font-semibold text-[var(--pd-modal-text)] mb-1">Choose your coding agent</h3>
@@ -99,7 +103,7 @@ $effect(() => {
       API keys and providers are configured in Settings; the list below shows models that match the selected agent.
     </p>
 
-    <div class="grid grid-cols-4 gap-3" role="listbox" aria-label="Coding agent">
+    <div class="grid {section ? 'grid-cols-2' : 'grid-cols-4'} gap-3" role="listbox" aria-label="Coding agent">
       {#each filteredAgents as agent (agent.id)}
         {@const isSelected = selectedAgent === agent.id}
         <button
@@ -133,7 +137,21 @@ $effect(() => {
       {/each}
     </div>
   </div>
+  {/if}
 
+  {#if section === 'image'}
+    <div>
+      <label for="workspace-custom-image" class="block text-xs text-[var(--pd-content-card-text)] opacity-60 mb-1.5">
+        Container image of the workspace. Leave empty to use the agent's default image.
+      </label>
+      <Input
+        id="workspace-custom-image"
+        bind:value={customImage}
+        placeholder={selectedAgentInfo?.baseImage ?? 'Default agent image'}
+        class="w-full font-mono text-sm"
+      />
+    </div>
+  {:else if !section}
   <!-- Container image override -->
   <div class="rounded-xl border border-[var(--pd-content-card-border)]/85 bg-[var(--pd-content-card-bg)]/35 overflow-hidden">
     <button
@@ -162,9 +180,10 @@ $effect(() => {
       </div>
     {/if}
   </div>
+  {/if}
 
   <!-- Model catalog -->
-  {#if selectedAgent}
+  {#if (!section || section === 'model') && selectedAgent}
     <div>
       <h3 class="text-base font-semibold text-[var(--pd-modal-text)] mb-1">Model for workspace</h3>
       <p class="text-xs text-[var(--pd-content-card-text)] opacity-70 mb-3">

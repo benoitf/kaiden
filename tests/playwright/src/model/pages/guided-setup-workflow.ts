@@ -19,7 +19,6 @@
 import { type Page, test } from '@playwright/test';
 
 import type { CodingAgent } from '/@/model/core/types';
-import { WIZARD_STEP } from '/@/model/core/types';
 import { NavigationBar } from '/@/model/navigation/navigation';
 import { agentModelSetupSkipMessageFor, isAgentModelSetupAvailable } from '/@/model/pages/agent-model-setup';
 import { AgentWorkspacesPage } from '/@/model/pages/agent-workspaces-page';
@@ -51,8 +50,6 @@ export async function expectDefaultsInWorkspaceWizard(
   const agentWorkspacesPage = new AgentWorkspacesPage(page);
   await navigationBar.navigateToWorkspacesPage();
   const createPage = await agentWorkspacesPage.openCreatePage();
-  await createPage.sessionNameInput.fill('guided-setup-test');
-  await createPage.navigateToStep(WIZARD_STEP.AGENT_MODEL);
   await createPage.expectAgentSelected(agent);
   await createPage.expectModelSelected(modelLabel);
 }

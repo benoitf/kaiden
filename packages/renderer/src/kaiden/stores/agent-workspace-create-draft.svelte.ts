@@ -29,8 +29,10 @@ import type { FilesystemConfiguration, WorkspaceProjectInfo } from '/@api/worksp
 
 export const WORKSPACE_REGISTRY_HOSTS = ['registry.npmjs.org', 'pypi.python.org'];
 
-interface WorkspaceCreateDraft {
-  currentStepIndex: number;
+export type WorkspaceCreateView = 'blueprint' | 'list' | 'yaml';
+
+export interface WorkspaceCreateDraft {
+  view: WorkspaceCreateView;
   selectedProjectId: string | undefined;
   selectedGateway: string;
   sourcePath: string;
@@ -53,12 +55,13 @@ interface WorkspaceCreateDraft {
   selectedKnowledgeIds: string[];
   customImage: string;
   customImageFieldOpen: boolean;
+  selectedAddonIds: string[];
   initialized: boolean;
 }
 
 function createInitialDraft(): WorkspaceCreateDraft {
   return {
-    currentStepIndex: 0,
+    view: 'blueprint',
     selectedProjectId: undefined,
     selectedGateway: '',
     sourcePath: '',
@@ -84,6 +87,7 @@ function createInitialDraft(): WorkspaceCreateDraft {
     selectedKnowledgeIds: [],
     customImage: '',
     customImageFieldOpen: false,
+    selectedAddonIds: [],
     initialized: false,
   };
 }
@@ -158,7 +162,6 @@ export function initializeDraftFromProject(project: WorkspaceProjectInfo): void 
   applyProjectToDraft(project);
   wizard.draft.description = '';
   wizard.draft.configAction = 'merge';
-  wizard.draft.currentStepIndex = 0;
   wizard.draft.projectOpen = true;
 }
 

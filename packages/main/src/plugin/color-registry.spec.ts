@@ -71,6 +71,10 @@ class TestColorRegistry extends ColorRegistry {
     super.initBadge();
   }
 
+  override initBlueprint(): void {
+    super.initBlueprint();
+  }
+
   override initCardContent(): void {
     super.initCardContent();
   }
@@ -689,6 +693,28 @@ describe('badge', () => {
       dark: tailwindColorPalette.navy[500],
       light: tailwindColorPalette.navy[500],
     });
+  });
+});
+
+describe('blueprint', () => {
+  let spyOnRegisterColor: MockInstance<(colorId: string, definition: ColorDefinition) => void>;
+
+  beforeEach(() => {
+    spyOnRegisterColor = vi.spyOn(colorRegistry, 'registerColor');
+    spyOnRegisterColor.mockReturnValue(undefined);
+
+    colorRegistry.initBlueprint();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  test.each(['boundary', 'model', 'agent', 'addons', 'image', 'custom'])('registers blueprint-%s', name => {
+    expect(spyOnRegisterColor).toBeCalledWith(
+      `blueprint-${name}`,
+      expect.objectContaining({ dark: expect.any(String) }),
+    );
   });
 });
 
