@@ -495,3 +495,16 @@ test('recommended agent is sorted first regardless of other tags', () => {
   expect(options[1]).toHaveTextContent('Cloud Agent');
   expect(options[2]).toHaveTextContent('No Tag Agent');
 });
+
+test.each([
+  ['image' as const, { image: true, agents: false, model: false }],
+  ['agent' as const, { image: false, agents: true, model: false }],
+  ['model' as const, { image: false, agents: false, model: true }],
+])('section %s renders only its part', (section, expected) => {
+  render(AgentWorkspaceCreateStepAgentModel, { section, selectedAgent: 'opencode' });
+
+  expect(screen.queryByText(/Leave empty to use the agent/) !== null).toBe(expected.image);
+  expect(screen.queryByRole('listbox', { name: 'Coding agent' }) !== null).toBe(expected.agents);
+  expect(screen.queryByText('Model for workspace') !== null).toBe(expected.model);
+  expect(screen.queryByText('Container image override')).not.toBeInTheDocument();
+});

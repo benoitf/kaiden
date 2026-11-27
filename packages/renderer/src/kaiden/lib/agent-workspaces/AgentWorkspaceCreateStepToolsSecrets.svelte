@@ -20,6 +20,8 @@ interface Props {
   gateway: string;
   knowledgeItems: ChecklistItem[];
   selectedKnowledgeIds: string[];
+  /** Show the MCP servers list; the accordion wizard renders it in its own step. */
+  includeMcp?: boolean;
 }
 
 let {
@@ -32,6 +34,7 @@ let {
   gateway,
   knowledgeItems,
   selectedKnowledgeIds = $bindable(),
+  includeMcp = true,
 }: Props = $props();
 
 let secrets = $state.raw<SecretInfo[]>([]);
@@ -72,7 +75,7 @@ $effect(() => {
 
 let allIncluded: boolean = $derived(
   selectedSkillIds.length === skillItems.length &&
-    selectedMcpIds.length === mcpItems.length &&
+    (!includeMcp || selectedMcpIds.length === mcpItems.length) &&
     selectedSecretIds.length === secretItems.length &&
     selectedKnowledgeIds.length === knowledgeItems.length,
 );
@@ -80,7 +83,7 @@ let allIncluded: boolean = $derived(
 let summaryParts: string[] = $derived(
   [
     skillItems.length > 0 ? `${selectedSkillIds.length}/${skillItems.length} skills` : '',
-    mcpItems.length > 0 ? `${selectedMcpIds.length}/${mcpItems.length} MCP servers` : '',
+    includeMcp && mcpItems.length > 0 ? `${selectedMcpIds.length}/${mcpItems.length} MCP servers` : '',
     secretItems.length > 0 ? `${selectedSecretIds.length}/${secretItems.length} vault credentials` : '',
     knowledgeItems.length > 0 ? `${selectedKnowledgeIds.length}/${knowledgeItems.length} knowledges` : '',
   ].filter(Boolean),
@@ -118,7 +121,7 @@ function navigateToKnowledges(): void {
 
 <div class="rounded-xl border border-[var(--pd-content-card-border)] bg-[var(--pd-content-card-bg)] px-4 py-3">
   <Expandable expanded={false}>
-    {#snippet title()}<span class="text-sm font-medium text-[var(--pd-modal-text)]">Customize skills, MCP servers, vault, and knowledges</span>{/snippet}
+    {#snippet title()}<span class="text-sm font-medium text-[var(--pd-modal-text)]">Customize skills, {includeMcp ? 'MCP servers, ' : ''}vault, and knowledges</span>{/snippet}
     <div class="space-y-6 pt-3">
       <ChecklistPanel
         title="Skills"
@@ -132,6 +135,7 @@ function navigateToKnowledges(): void {
         {/snippet}
       </ChecklistPanel>
 
+      {#if includeMcp}
       <ChecklistPanel
         title="MCP Servers"
         subtitle="Connect to Model Context Protocol servers for extended capabilities"
@@ -143,6 +147,7 @@ function navigateToKnowledges(): void {
           <Button type="secondary" onclick={navigateToMcp}>Manage Servers</Button>
         {/snippet}
       </ChecklistPanel>
+      {/if}
 
       <ChecklistPanel
         title="Secret Vault"

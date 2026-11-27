@@ -274,3 +274,11 @@ test('hides name error when errors is empty', () => {
 
   expect(screen.queryByText(/workspace with this name already exists/)).not.toBeInTheDocument();
 });
+
+test('Expect embedded mode hides the heading and the name field', () => {
+  render(AgentWorkspaceCreateStepWorkspace, { ...defaultProps, embedded: true });
+
+  expect(screen.queryByText(/Point to a local project folder/)).not.toBeInTheDocument();
+  expect(screen.queryByPlaceholderText('e.g., front-refactor')).not.toBeInTheDocument();
+  expect(screen.getByPlaceholderText('/path/to/project')).toBeInTheDocument();
+});

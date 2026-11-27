@@ -31,6 +31,8 @@ import type { WorkspaceProjectInfo } from '/@api/workspace-project-info';
 
 import {
   applyProjectToDraft,
+  applyYamlToDraft,
+  draftToYaml,
   initializeDraftFromProject,
   resetDraft,
   wizard,
@@ -372,5 +374,76 @@ describe('selection syncing from subscriptions', () => {
     ]);
 
     expect(wizard.draft.selectedSkillIds).toEqual(['k8s']);
+  });
+});
+
+describe('YAML view', () => {
+  const sonnet = { providerId: 'anthropic', connectionId: 'c1', label: 'sonnet' } as ModelInfo;
+  const opus = { providerId: 'anthropic', connectionId: 'c1', label: 'opus' } as ModelInfo;
+
+  test('draftToYaml then applyYamlToDraft round-trips the draft', () => {
+    wizard.draft.sessionName = 'payments';
+    wizard.draft.selectedGateway = 'local';
+    wizard.draft.selectedAgent = 'claude';
+    wizard.draft.selectedModel = sonnet;
+    wizard.draft.sourcePath = '/src/payments';
+    wizard.draft.selectedFileAccess = 'custom';
+    wizard.draft.customMounts = [{ host: '/data', target: '/mnt/data', ro: true }];
+    wizard.draft.selectedNetwork = 'blocked';
+    wizard.draft.hostsByMode = { ...wizard.draft.hostsByMode, blocked: ['api.example.com'] };
+    const yaml = draftToYaml();
+
+    resetDraft();
+
+    expect(applyYamlToDraft(yaml, [sonnet])).toBeUndefined();
+    expect(wizard.draft.sessionName).toBe('payments');
+    expect(wizard.draft.nameManuallyEdited).toBe(true);
+    expect(wizard.draft.selectedGateway).toBe('local');
+    expect(wizard.draft.selectedAgent).toBe('claude');
+    expect(wizard.draft.selectedModel).toEqual(sonnet);
+    expect(wizard.draft.sourcePath).toBe('/src/payments');
+    expect(wizard.draft.selectedFileAccess).toBe('custom');
+    expect(wizard.draft.customMounts).toEqual([{ host: '/data', target: '/mnt/data', ro: true }]);
+    expect(wizard.draft.selectedNetwork).toBe('blocked');
+    expect(wizard.draft.hostsByMode['blocked']).toEqual(['api.example.com']);
+  });
+
+  test('applyYamlToDraft switches the model', () => {
+    wizard.draft.selectedModel = sonnet;
+
+    expect(applyYamlToDraft('model:\n  provider: anthropic\n  label: opus\n', [sonnet, opus])).toBeUndefined();
+
+    expect(wizard.draft.selectedModel).toEqual(opus);
+  });
+
+  test('applyYamlToDraft maps the registry hosts to the developer preset', () => {
+    wizard.draft.selectedNetwork = 'blocked';
+
+    expect(applyYamlToDraft(`hosts: [${WORKSPACE_REGISTRY_HOSTS.join(', ')}]`, [])).toBeUndefined();
+
+    expect(wizard.draft.selectedNetwork).toBe('registries');
+  });
+
+  test('applyYamlToDraft with empty mounts goes back to workspace-only access', () => {
+    wizard.draft.selectedFileAccess = 'custom';
+
+    expect(applyYamlToDraft('mounts: []', [])).toBeUndefined();
+
+    expect(wizard.draft.selectedFileAccess).toBe('workspace');
+  });
+
+  test.each([
+    ['name: [', /./],
+    ['- a\n- b', /must be a mapping/],
+    ['name: 42', /"name" must be a string/],
+    ['skills: [1]', /"skills" must be a list of strings/],
+    ['mounts: [{ target: /x }]', /"mounts" must be a list/],
+    ['model: { provider: nope, label: nope }', /"model" must reference/],
+  ])('applyYamlToDraft rejects %j and leaves the draft untouched', (text, message) => {
+    wizard.draft.sessionName = 'keep';
+
+    expect(applyYamlToDraft(text, [sonnet])).toMatch(message);
+
+    expect(wizard.draft.sessionName).toBe('keep');
   });
 });

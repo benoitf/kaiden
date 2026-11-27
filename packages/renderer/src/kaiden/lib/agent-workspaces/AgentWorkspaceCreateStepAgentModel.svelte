@@ -18,6 +18,8 @@ interface Props {
   selectedModel?: ModelInfo;
   customImage?: string;
   customImageFieldOpen?: boolean;
+  /** Render only one section (used by the accordion wizard); all sections when omitted. */
+  section?: 'image' | 'agent' | 'model';
 }
 
 let {
@@ -25,6 +27,7 @@ let {
   selectedModel = $bindable(),
   customImage = $bindable(''),
   customImageFieldOpen = $bindable(false),
+  section,
 }: Props = $props();
 
 let filteredAgents = $derived(
@@ -92,6 +95,21 @@ $effect(() => {
 </script>
 
 <div class="flex flex-col gap-6">
+  {#if section === 'image'}
+    <div>
+      <label for="workspace-custom-image" class="block text-xs text-[var(--pd-content-card-text)] opacity-60 mb-1.5">
+        Leave empty to use the agent's default image.
+      </label>
+      <Input
+        id="workspace-custom-image"
+        bind:value={customImage}
+        placeholder={selectedAgentInfo?.baseImage ?? 'Default agent image'}
+        class="w-full font-mono text-sm"
+      />
+    </div>
+  {/if}
+
+  {#if !section || section === 'agent'}
   <!-- Agent selection -->
   <div>
     <h3 class="text-base font-semibold text-[var(--pd-modal-text)] mb-1">Choose your coding agent</h3>
@@ -133,7 +151,9 @@ $effect(() => {
       {/each}
     </div>
   </div>
+  {/if}
 
+  {#if !section}
   <!-- Container image override -->
   <div class="rounded-xl border border-[var(--pd-content-card-border)]/85 bg-[var(--pd-content-card-bg)]/35 overflow-hidden">
     <button
@@ -162,9 +182,10 @@ $effect(() => {
       </div>
     {/if}
   </div>
+  {/if}
 
   <!-- Model catalog -->
-  {#if selectedAgent}
+  {#if selectedAgent && (!section || section === 'model')}
     <div>
       <h3 class="text-base font-semibold text-[var(--pd-modal-text)] mb-1">Model for workspace</h3>
       <p class="text-xs text-[var(--pd-content-card-text)] opacity-70 mb-3">

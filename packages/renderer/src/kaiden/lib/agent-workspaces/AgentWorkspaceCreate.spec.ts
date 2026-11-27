@@ -18,10 +18,10 @@
 
 import '@testing-library/jest-dom/vitest';
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { writable } from 'svelte/store';
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { assert, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { initializeDraftFromProject, resetDraft, wizard } from '/@/kaiden/stores/agent-workspace-create-draft.svelte';
 import * as agentsStore from '/@/kaiden/stores/agents';
@@ -34,6 +34,7 @@ import * as ragStore from '/@/kaiden/stores/rag-environments';
 import * as secretVaultStore from '/@/kaiden/stores/secret-vault';
 import * as skillsStore from '/@/kaiden/stores/skills';
 import * as workspaceProjectsStore from '/@/kaiden/stores/workspace-projects';
+import MonacoEditor from '/@/lib/editor/MonacoEditor.svelte';
 import { handleNavigation } from '/@/navigation';
 import * as providerStore from '/@/stores/providers';
 import type { AgentInfo } from '/@api/agent-info';
@@ -60,6 +61,7 @@ vi.mock(import('/@/kaiden/stores/models'));
 vi.mock(import('/@/kaiden/stores/openshell-gateways'));
 vi.mock(import('/@/kaiden/stores/openshell-sandboxes'));
 vi.mock(import('/@/kaiden/stores/workspace-projects'));
+vi.mock(import('/@/lib/editor/MonacoEditor.svelte'));
 
 function buildCatalogModels(providers: ProviderInfo[]): CatalogModelInfo[] {
   const result: CatalogModelInfo[] = [];
@@ -195,28 +197,100 @@ beforeEach(() => {
   resetDraft();
 });
 
+const stepTitles = ['Base image', 'Agent', 'Model', 'Add-ons', 'MCP servers', 'Folders', 'Reachable hostnames'];
+
+function createButton(): HTMLElement {
+  return screen.getByRole('button', { name: 'Create workspace' });
+}
+
+function nameInput(): HTMLInputElement {
+  const input = screen.getByRole('textbox', { name: 'Workspace name' });
+  assert(input instanceof HTMLInputElement);
+  return input;
+}
+
+function stepCard(title: string): HTMLElement {
+  return screen.getByRole('region', { name: title });
+}
+
+async function openStep(title: string): Promise<void> {
+  await fireEvent.click(within(stepCard(title)).getByRole('button', { name: `Edit ${title}` }));
+}
+
+async function navigateToFileSystemStep(): Promise<void> {
+  await setSourcePath('/home/user/my-repo');
+  await openStep('Folders');
+}
+
+async function setSourcePath(value: string): Promise<void> {
+  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), { target: { value } });
+}
+
 test('Expect page title displayed', () => {
   render(AgentWorkspaceCreate);
 
-  expect(screen.getByText('Create Coding Agent Workspace')).toBeInTheDocument();
+  expect(screen.getByText('Create Agent Workspace')).toBeInTheDocument();
 });
 
-test('Expect wizard stepper rendered with all five step labels', () => {
+test('Expect seven step cards rendered with the first one active', () => {
   render(AgentWorkspaceCreate);
 
-  expect(screen.getByRole('navigation', { name: 'Wizard progress' })).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Workspace step' })).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Agent & Model step' })).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Tools & Secrets step' })).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'File System step' })).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Networking step' })).toBeInTheDocument();
+  for (const title of stepTitles) {
+    expect(stepCard(title)).toBeInTheDocument();
+  }
+  expect(stepCard('Base image')).toHaveAttribute('aria-current', 'step');
+  expect(within(stepCard('Base image')).queryByRole('button', { name: 'Edit Base image' })).not.toBeInTheDocument();
+  for (const title of stepTitles.slice(1)) {
+    expect(stepCard(title)).not.toHaveAttribute('aria-current');
+    expect(within(stepCard(title)).getByRole('button', { name: `Edit ${title}` })).toBeInTheDocument();
+  }
 });
 
-test('Expect workspace step content shown on initial render', () => {
+test('Expect progress counter shows the current step out of seven', async () => {
   render(AgentWorkspaceCreate);
 
-  expect(screen.getByRole('heading', { name: 'Workspace' })).toBeInTheDocument();
-  expect(screen.getByText(/Point to a local project folder/)).toBeInTheDocument();
+  expect(screen.getByText('1 of 7')).toBeInTheDocument();
+
+  await openStep('Folders');
+
+  expect(screen.getByText('6 of 7')).toBeInTheDocument();
+});
+
+test('Expect clicking a collapsed card opens that step', async () => {
+  render(AgentWorkspaceCreate);
+
+  expect(screen.queryByRole('heading', { name: 'Model for workspace' })).not.toBeInTheDocument();
+
+  await openStep('Model');
+
+  expect(stepCard('Model')).toHaveAttribute('aria-current', 'step');
+  expect(stepCard('Base image')).not.toHaveAttribute('aria-current');
+  expect(screen.getByRole('heading', { name: 'Model for workspace' })).toBeVisible();
+  expect(within(stepCard('Base image')).getByRole('button', { name: 'Edit Base image' })).toBeInTheDocument();
+});
+
+test('Expect Continue advances to the next step and Back returns to the previous one', async () => {
+  render(AgentWorkspaceCreate);
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+  expect(stepCard('Agent')).toHaveAttribute('aria-current', 'step');
+  expect(screen.getByText('2 of 7')).toBeInTheDocument();
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+
+  expect(stepCard('Base image')).toHaveAttribute('aria-current', 'step');
+  expect(screen.getByText('1 of 7')).toBeInTheDocument();
+});
+
+test('Expect blueprint layer opens the matching step', async () => {
+  render(AgentWorkspaceCreate);
+
+  await fireEvent.click(
+    within(screen.getByRole('complementary', { name: 'Blueprint' })).getByRole('button', { name: 'Edit Folders' }),
+  );
+
+  expect(stepCard('Folders')).toHaveAttribute('aria-current', 'step');
 });
 
 test('Expect source input rendered with correct placeholder', () => {
@@ -228,7 +302,7 @@ test('Expect source input rendered with correct placeholder', () => {
 test('Expect workspace name input rendered', () => {
   render(AgentWorkspaceCreate);
 
-  expect(screen.getByPlaceholderText('e.g., front-refactor')).toBeInTheDocument();
+  expect(nameInput()).toHaveAttribute('placeholder', 'workspace-name');
 });
 
 test('Expect description section is collapsed by default', () => {
@@ -240,6 +314,7 @@ test('Expect description section is collapsed by default', () => {
 test('Expect description section expands when toggle clicked', async () => {
   render(AgentWorkspaceCreate);
 
+  await openStep('Folders');
   await fireEvent.click(screen.getByRole('button', { name: /Description/ }));
 
   expect(screen.getByRole('textbox', { name: 'Description' })).toBeInTheDocument();
@@ -248,11 +323,9 @@ test('Expect description section expands when toggle clicked', async () => {
 test('Expect workspace name auto-suggested from source path', async () => {
   render(AgentWorkspaceCreate);
 
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-project' },
-  });
+  await setSourcePath('/home/user/my-project');
 
-  expect((screen.getByPlaceholderText('e.g., front-refactor') as HTMLInputElement).value).toBe('my-project');
+  expect(nameInput().value).toBe('my-project');
 });
 
 test('Expect gateway selector hidden when only one gateway is available', () => {
@@ -281,6 +354,7 @@ test('Expect gateway selector defaults to the active OpenShell gateway when mult
     },
   ]);
   render(AgentWorkspaceCreate);
+  await openStep('Folders');
 
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/my-repo' },
@@ -289,12 +363,12 @@ test('Expect gateway selector defaults to the active OpenShell gateway when mult
   const gatewaySelector = screen.getByRole('combobox');
   expect(gatewaySelector).toHaveValue('remote');
   expect(screen.queryByRole('option', { name: 'Select a gateway' })).not.toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Continue' })).not.toBeDisabled();
+  expect(createButton()).not.toBeDisabled();
 
   await fireEvent.change(gatewaySelector, { target: { value: 'local' } });
 
   expect(gatewaySelector).toHaveValue('local');
-  expect(screen.getByRole('button', { name: 'Continue' })).not.toBeDisabled();
+  expect(createButton()).not.toBeDisabled();
 });
 
 test('Expect selected gateway included when creating a workspace', async () => {
@@ -317,29 +391,31 @@ test('Expect selected gateway included when creating a workspace', async () => {
     },
   ]);
   render(AgentWorkspaceCreate);
+  await openStep('Folders');
 
   await fireEvent.change(screen.getByRole('combobox'), { target: { value: 'remote' } });
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/my-repo' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(expect.objectContaining({ gateway: 'remote' }));
 });
 
-test('does not offer gateways while their reachability state is unavailable', () => {
+test('does not offer gateways while their reachability state is unavailable', async () => {
   vi.mocked(openshellGatewaysStore).openshellGateways.set([
     { canStop: false, canStart: false, name: 'local', endpoint: 'http://localhost:17670', active: true },
     { canStop: false, canStart: false, name: 'remote', endpoint: 'https://remote.example.com', active: false },
   ]);
 
   render(AgentWorkspaceCreate);
+  await openStep('Folders');
 
   expect(screen.queryByRole('option', { name: /local/ })).not.toBeInTheDocument();
   expect(screen.queryByRole('option', { name: /remote/ })).not.toBeInTheDocument();
 });
 
-test('does not offer unreachable gateways for workspace creation', () => {
+test('does not offer unreachable gateways for workspace creation', async () => {
   vi.mocked(openshellGatewaysStore).openshellGateways.set([
     {
       canStop: false,
@@ -368,13 +444,14 @@ test('does not offer unreachable gateways for workspace creation', () => {
   ]);
 
   render(AgentWorkspaceCreate);
+  await openStep('Folders');
 
   expect(screen.getByRole('option', { name: /local/ })).toBeInTheDocument();
   expect(screen.getByRole('option', { name: /remote/ })).toBeInTheDocument();
   expect(screen.queryByRole('option', { name: /stopped/ })).not.toBeInTheDocument();
 });
 
-test('does not offer version-incompatible gateways for workspace creation', () => {
+test('does not offer version-incompatible gateways for workspace creation', async () => {
   vi.mocked(openshellGatewaysStore).openshellGateways.set([
     {
       name: 'compatible-1',
@@ -414,6 +491,7 @@ test('does not offer version-incompatible gateways for workspace creation', () =
   ]);
 
   render(AgentWorkspaceCreate);
+  await openStep('Folders');
 
   expect(screen.getByRole('option', { name: /compatible-1/ })).toBeInTheDocument();
   expect(screen.getByRole('option', { name: /compatible-2/ })).toBeInTheDocument();
@@ -441,6 +519,7 @@ test('user-selected gateway is preserved across store updates', async () => {
     },
   ]);
   render(AgentWorkspaceCreate);
+  await openStep('Folders');
 
   const gatewaySelector = screen.getByRole('combobox');
   expect(gatewaySelector).toHaveValue('local');
@@ -500,6 +579,7 @@ test('falls back to active gateway when selected gateway becomes unreachable', a
     },
   ]);
   render(AgentWorkspaceCreate);
+  await openStep('Folders');
 
   await fireEvent.change(screen.getByRole('combobox'), { target: { value: 'remote' } });
   expect(screen.getByRole('combobox')).toHaveValue('remote');
@@ -573,30 +653,29 @@ test('Expect Continue button rendered on step 1', () => {
   expect(screen.getByRole('button', { name: 'Continue' })).toBeInTheDocument();
 });
 
-test('Expect Continue button disabled when source is empty', () => {
+test('Expect Create workspace button disabled when source and name are empty', () => {
   render(AgentWorkspaceCreate);
 
-  expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
+  expect(createButton()).toBeDisabled();
 });
 
-test('Expect Continue button enabled when name and source are filled', async () => {
+test('Expect Create workspace button enabled from the first step when source is filled', async () => {
   render(AgentWorkspaceCreate);
 
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
+  await setSourcePath('/home/user/my-repo');
 
-  expect(screen.getByRole('button', { name: 'Continue' })).not.toBeDisabled();
+  expect(stepCard('Base image')).toHaveAttribute('aria-current', 'step');
+  expect(createButton()).not.toBeDisabled();
 });
 
-test('Expect Continue button enabled when sourcePath is empty but workspace name is filled', async () => {
+test('Expect Create workspace button enabled when sourcePath is empty but workspace name is filled', async () => {
   render(AgentWorkspaceCreate);
 
-  await fireEvent.input(screen.getByPlaceholderText('e.g., front-refactor'), {
+  await fireEvent.input(nameInput(), {
     target: { value: 'my-sandbox' },
   });
 
-  expect(screen.getByRole('button', { name: 'Continue' })).not.toBeDisabled();
+  expect(createButton()).not.toBeDisabled();
 });
 
 test('Expect whitespace-only sourcePath sent as undefined to createAgentWorkspace', async () => {
@@ -605,11 +684,11 @@ test('Expect whitespace-only sourcePath sent as undefined to createAgentWorkspac
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '   ' },
   });
-  await fireEvent.input(screen.getByPlaceholderText('e.g., front-refactor'), {
+  await fireEvent.input(nameInput(), {
     target: { value: 'my-sandbox' },
   });
 
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -619,45 +698,38 @@ test('Expect whitespace-only sourcePath sent as undefined to createAgentWorkspac
   );
 });
 
-test('Expect Continue button disabled when workspace name exceeds hostname limit', async () => {
+test('Expect Create workspace button disabled when workspace name exceeds hostname limit', async () => {
   render(AgentWorkspaceCreate);
 
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  await fireEvent.input(screen.getByPlaceholderText('e.g., front-refactor'), {
+  await setSourcePath('/home/user/my-repo');
+  await fireEvent.input(nameInput(), {
     target: { value: 'a'.repeat(20) },
   });
 
-  expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
+  expect(createButton()).toBeDisabled();
+  expect(nameInput()).toHaveAttribute('aria-invalid', 'true');
   expect(screen.getByText(/must not exceed 19 characters/)).toBeInTheDocument();
+});
+
+test('Expect Create workspace button disabled when a workspace with the same name exists on the gateway', async () => {
+  vi.mocked(openshellSandboxesStore).allOpenshellSandboxes = writable([
+    { name: 'my-repo', gatewayName: 'kaiden' } as SandboxInfo & { gatewayName: string },
+  ]);
+  render(AgentWorkspaceCreate);
+
+  await setSourcePath('/home/user/my-repo');
+
+  expect(createButton()).toBeDisabled();
+  expect(screen.getAllByText(/A workspace with this name already exists/).length).toBeGreaterThanOrEqual(1);
 });
 
 test('Expect basename-derived name sanitized to fit hostname limit', async () => {
   render(AgentWorkspaceCreate);
 
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: `/home/user/${'a'.repeat(20)}` },
-  });
+  await setSourcePath(`/home/user/${'a'.repeat(20)}`);
 
-  expect((screen.getByPlaceholderText('e.g., front-refactor') as HTMLInputElement).value).toBe('a'.repeat(19));
-  expect(screen.getByRole('button', { name: 'Continue' })).not.toBeDisabled();
-});
-
-test('Expect use-all-defaults button on step 1', async () => {
-  render(AgentWorkspaceCreate);
-
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-
-  expect(screen.getByRole('button', { name: 'Use all defaults and create workspace' })).not.toBeDisabled();
-});
-
-test('Expect use-all-defaults button disabled on step 1 when source is empty', () => {
-  render(AgentWorkspaceCreate);
-
-  expect(screen.getByRole('button', { name: 'Use all defaults and create workspace' })).toBeDisabled();
+  expect(nameInput().value).toBe('a'.repeat(19));
+  expect(createButton()).not.toBeDisabled();
 });
 
 test('Expect Cancel button always visible', () => {
@@ -666,58 +738,99 @@ test('Expect Cancel button always visible', () => {
   expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
 });
 
+test('Expect Cancel resets the draft and navigates to agent workspaces', async () => {
+  render(AgentWorkspaceCreate);
+
+  await setSourcePath('/home/user/my-repo');
+  await openStep('Folders');
+  await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+  expect(wizard.draft.sourcePath).toBe('');
+  expect(wizard.draft.currentStepIndex).toBe(0);
+  expect(handleNavigation).toHaveBeenCalledWith({ page: 'agent-workspaces' });
+  expect(window.createAgentWorkspace).not.toHaveBeenCalled();
+});
+
 test('Expect Back button not visible on first step', () => {
   render(AgentWorkspaceCreate);
 
   expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument();
 });
 
-test('Expect sandbox security message displayed with step counter', () => {
+test.each([
+  { metaKey: true },
+  { ctrlKey: true },
+])('Expect keyboard shortcut %o + Enter creates the workspace', async modifier => {
   render(AgentWorkspaceCreate);
 
-  expect(screen.getByText(/Step 1 of 5 · Workspace will run in a secured sandbox environment/)).toBeInTheDocument();
+  await setSourcePath('/home/user/my-repo');
+  await fireEvent.keyDown(window, { key: 'Enter', ...modifier });
+
+  expect(window.createAgentWorkspace).toHaveBeenCalledWith(expect.objectContaining({ name: 'my-repo' }));
+  expect(handleNavigation).toHaveBeenCalledWith({ page: 'agent-workspaces' });
 });
 
-test('Expect navigating to agent & model step shows coding agent options', async () => {
+test('Expect keyboard shortcut does nothing while creation is blocked', async () => {
   render(AgentWorkspaceCreate);
 
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
+  await fireEvent.keyDown(window, { key: 'Enter', metaKey: true });
+  await fireEvent.keyDown(window, { key: 'Enter' });
+
+  expect(window.createAgentWorkspace).not.toHaveBeenCalled();
+});
+
+test('Expect YAML toggle replaces the step cards with a YAML editor', async () => {
+  render(AgentWorkspaceCreate);
+
+  await setSourcePath('/home/user/my-repo');
+  expect(screen.getByRole('button', { name: 'Visual' })).toHaveAttribute('aria-pressed', 'true');
+
+  await fireEvent.click(screen.getByRole('button', { name: 'YAML' }));
+
+  expect(screen.getByRole('button', { name: 'YAML' })).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByRole('button', { name: 'Visual' })).toHaveAttribute('aria-pressed', 'false');
+  expect(screen.queryByRole('region', { name: 'Base image' })).not.toBeInTheDocument();
+  expect(MonacoEditor).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ language: 'yaml', content: expect.stringContaining('name: my-repo') }),
+  );
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Visual' }));
+
+  expect(stepCard('Base image')).toBeInTheDocument();
+});
+
+test('Expect navigating to agent step shows coding agent options', async () => {
+  render(AgentWorkspaceCreate);
+
+  await setSourcePath('/home/user/my-repo');
   await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
-  expect(screen.getAllByText('Coding Agent').length).toBeGreaterThanOrEqual(1);
-  expect(screen.getByText('Claude Code')).toBeInTheDocument();
-  expect(screen.getByText('Goose')).toBeInTheDocument();
-  expect(screen.getAllByText('OpenCode').length).toBeGreaterThanOrEqual(1);
+  const agents = screen.getByRole('listbox', { name: 'Coding agent' });
+  expect(within(agents).getByRole('option', { name: /Claude Code/ })).toBeInTheDocument();
+  expect(within(agents).getByRole('option', { name: /Goose/ })).toBeInTheDocument();
+  expect(within(agents).getByRole('option', { name: /OpenCode/ })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument();
 });
 
-test('Expect Start Workspace button visible on last step', async () => {
+test('Expect Continue walks every step and the last step has no Continue', async () => {
   render(AgentWorkspaceCreate);
 
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
+  await setSourcePath('/home/user/my-repo');
 
   for (let i = 0; i < wizardStepCount - 1; i++) {
     await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
   }
 
-  expect(screen.getByRole('button', { name: 'Start Workspace' })).toBeInTheDocument();
+  expect(stepCard('Reachable hostnames')).toHaveAttribute('aria-current', 'step');
   expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
+  expect(createButton()).not.toBeDisabled();
 });
 
-test('Expect custom mounts section shown when Custom Paths selected on filesystem step', async () => {
+test('Expect custom mounts section shown when Custom Paths selected on folders step', async () => {
   render(AgentWorkspaceCreate);
 
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  // Workspace → Agent & Model → Tools & Secrets → File System
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+  await navigateToFileSystemStep();
 
   await fireEvent.click(screen.getByRole('radio', { name: 'Use Custom Paths' }));
 
@@ -733,16 +846,12 @@ test('Expect custom mounts section shown when Custom Paths selected on filesyste
 });
 
 async function navigateToToolsSecretsStep(): Promise<void> {
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  // Workspace → Agent & Model → Tools & Secrets
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+  await setSourcePath('/home/user/my-repo');
+  await openStep('Add-ons');
 }
 
 async function expandCustomize(): Promise<void> {
-  await fireEvent.click(screen.getByRole('button', { name: /Customize skills, MCP servers, vault, and knowledges/ }));
+  await fireEvent.click(screen.getByRole('button', { name: /Customize skills, vault, and knowledges/ }));
 }
 
 test('Expect summary card and customize toggle on tools & secrets step', async () => {
@@ -751,9 +860,7 @@ test('Expect summary card and customize toggle on tools & secrets step', async (
   await navigateToToolsSecretsStep();
 
   expect(screen.getByText(/Everything available is included/)).toBeInTheDocument();
-  expect(
-    screen.getByRole('button', { name: /Customize skills, MCP servers, vault, and knowledges/ }),
-  ).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /Customize skills, vault, and knowledges/ })).toBeInTheDocument();
 });
 
 test('Expect secrets section visible after expanding customize', async () => {
@@ -823,6 +930,7 @@ test('Expect secrets listed from the selected gateway', async () => {
 
   render(AgentWorkspaceCreate);
 
+  await openStep('Folders');
   await fireEvent.change(screen.getByRole('combobox'), { target: { value: 'remote' } });
   await navigateToToolsSecretsStep();
   await expandCustomize();
@@ -991,7 +1099,7 @@ test('Expect createAgentWorkspace excludes disabled skill paths', async () => {
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/my-repo' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1034,7 +1142,7 @@ test('Expect createAgentWorkspace called with skill paths', async () => {
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/my-repo' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1049,7 +1157,7 @@ test('Expect createAgentWorkspace called without skills when none available', as
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/my-repo' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1075,6 +1183,11 @@ test('Expect createAgentWorkspace called with secret ids when vault has entries'
       description: 'API key',
     },
   ]);
+  // the Add-ons step stays mounted and keeps only the secrets the selected gateway exposes
+  vi.mocked(window.listSecrets).mockResolvedValue([
+    { name: 'github-token', type: 'github', description: 'Personal access token', gateway: 'kaiden' },
+    { name: 'anthropic-key', type: 'anthropic', description: 'API key', gateway: 'kaiden' },
+  ]);
   wizard.draft.selectedSecretIds = ['github-token', 'anthropic-key'];
 
   render(AgentWorkspaceCreate);
@@ -1082,7 +1195,8 @@ test('Expect createAgentWorkspace called with secret ids when vault has entries'
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/my-repo' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await waitFor(() => expect(createButton()).not.toBeDisabled());
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1097,7 +1211,7 @@ test('Expect createAgentWorkspace called without secrets when vault is empty', a
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/my-repo' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1162,13 +1276,8 @@ test('Expect Manage Knowledges button navigates to rag environments page', async
 });
 
 async function navigateToNetworkingStep(): Promise<void> {
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  // Workspace → Agent & Model → Tools & Secrets → File System → Networking
-  for (let i = 0; i < 4; i++) {
-    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  }
+  await setSourcePath('/home/user/my-repo');
+  await openStep('Reachable hostnames');
 }
 
 test('Expect networking step shows Network Policy heading', async () => {
@@ -1232,7 +1341,7 @@ test('Expect default agent from onboarding.defaultWorkspaceSettings when valid',
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/my-repo' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.getConfigurationValue).toHaveBeenCalledWith('onboarding.defaultWorkspaceSettings');
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
@@ -1250,7 +1359,7 @@ test('Expect default agent falls back to opencode when setting is empty', async 
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/my-repo' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1271,7 +1380,7 @@ test('Expect default agent falls back to opencode when setting is unknown value'
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/my-repo' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1285,7 +1394,7 @@ test('Expect createAgentWorkspace called with deny network when blocked selected
 
   await navigateToNetworkingStep();
   await fireEvent.click(screen.getByRole('radio', { name: 'Use Deny All' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1299,7 +1408,7 @@ test('Expect createAgentWorkspace called without network when agent_mode selecte
 
   await navigateToNetworkingStep();
   await fireEvent.click(screen.getByRole('radio', { name: 'Use Agent mode' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1324,7 +1433,7 @@ test('Expect default model from onboarding.defaultWorkspaceSettings when valid',
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/my-repo' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.getConfigurationValue).toHaveBeenCalledWith('onboarding.defaultWorkspaceSettings');
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
@@ -1343,7 +1452,7 @@ test('Expect first compatible model used when defaultWorkspaceSettings has no mo
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/my-repo' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1352,7 +1461,7 @@ test('Expect first compatible model used when defaultWorkspaceSettings has no mo
   );
 });
 
-test('Expect use-all-defaults button disabled when no model available', async () => {
+test('Expect Create workspace button disabled when no model available', async () => {
   setProviders([]);
 
   render(AgentWorkspaceCreate);
@@ -1361,10 +1470,10 @@ test('Expect use-all-defaults button disabled when no model available', async ()
     target: { value: '/home/user/my-repo' },
   });
 
-  expect(screen.getByRole('button', { name: 'Use all defaults and create workspace' })).toBeDisabled();
+  expect(createButton()).toBeDisabled();
 });
 
-test('Expect Continue button disabled on agent & model step when no model available', async () => {
+test('Expect Continue button disabled on model step when no model available', async () => {
   setProviders([]);
 
   render(AgentWorkspaceCreate);
@@ -1372,12 +1481,12 @@ test('Expect Continue button disabled on agent & model step when no model availa
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/my-repo' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+  await openStep('Model');
 
   expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
 });
 
-test('Expect Start Workspace button disabled when no model available', async () => {
+test('Expect Create workspace button disabled on last step when model is cleared', async () => {
   render(AgentWorkspaceCreate);
 
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
@@ -1392,7 +1501,7 @@ test('Expect Start Workspace button disabled when no model available', async () 
   wizard.draft.selectedModel = undefined;
 
   await vi.waitFor(() => {
-    expect(screen.getByRole('button', { name: 'Start Workspace' })).toBeDisabled();
+    expect(createButton()).toBeDisabled();
   });
 });
 
@@ -1405,7 +1514,7 @@ test('Expect first compatible model used when defaultWorkspaceSettings is undefi
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/my-repo' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1444,7 +1553,7 @@ test('Expect createAgentWorkspace called with registry hosts plus custom host fo
   await fireEvent.input(screen.getByLabelText('Custom host 3'), {
     target: { value: 'api.example.com' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1482,7 +1591,7 @@ test('Expect createAgentWorkspace splits MCP servers into remote and command ent
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/my-repo' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1503,7 +1612,7 @@ test('Expect createAgentWorkspace called with custom hosts only for Deny All wit
   await fireEvent.input(screen.getByLabelText('Custom host 1'), {
     target: { value: 'internal.corp.io' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1542,7 +1651,7 @@ test('Expect createAgentWorkspace called without removed registry host for Devel
   await navigateToNetworkingStep();
 
   await fireEvent.click(screen.getByRole('button', { name: 'Remove host 1' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1592,7 +1701,7 @@ test('Expect createAgentWorkspace called with workspaceConfiguration from settin
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/my-repo' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1630,7 +1739,7 @@ test('Expect workspaceConfiguration undefined when no settings for selected agen
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/my-repo' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1658,7 +1767,7 @@ test('Expect workspaceConfiguration looked up by agent id directly', async () =>
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/my-repo' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1694,7 +1803,7 @@ test('Expect tilde mount paths normalized to $HOME in workspaceConfiguration', a
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/my-repo' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1711,23 +1820,13 @@ test('Expect tilde mount paths normalized to $HOME in workspaceConfiguration', a
   );
 });
 
-async function navigateToFileSystemStep(): Promise<void> {
-  await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
-    target: { value: '/home/user/my-repo' },
-  });
-  // Workspace → Agent & Model → Tools & Secrets → File System
-  for (let i = 0; i < 3; i++) {
-    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  }
-}
-
 test('Expect createAgentWorkspace called without mounts when workspace (default) file access selected', async () => {
   render(AgentWorkspaceCreate);
 
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/my-repo' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1749,8 +1848,7 @@ test('Expect createAgentWorkspace called with custom mounts when Custom Paths se
     target: { value: '/workspace/data' },
   });
 
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1770,8 +1868,7 @@ test('Expect createAgentWorkspace called with ro:true when read-only toggled for
   });
   await fireEvent.click(screen.getByRole('button', { name: 'Toggle read-only for mount 1' }));
 
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1790,8 +1887,7 @@ test('Expect custom mount defaults target to the host folder name when target is
     target: { value: '/home/user/configs' },
   });
 
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1810,8 +1906,7 @@ test('Expect custom mount strips trailing separators when deriving target from h
     target: { value: '/home/user/data/' },
   });
 
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1830,8 +1925,7 @@ test('Expect custom mount derives correct basename from Windows backslash host p
     target: { value: 'C:\\Users\\alice\\configs' },
   });
 
-  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1858,6 +1952,7 @@ test('Expect config-exists notification shown when existing config detected', as
   vi.mocked(window.checkAgentWorkspaceConfigExists).mockResolvedValue(true);
 
   render(AgentWorkspaceCreate);
+  await openStep('Folders');
 
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/existing-project' },
@@ -1888,6 +1983,7 @@ test('Expect Start workspace as-is calls createAgentWorkspace with model', async
   vi.mocked(window.checkAgentWorkspaceConfigExists).mockResolvedValue(true);
 
   render(AgentWorkspaceCreate);
+  await openStep('Folders');
 
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/existing-project' },
@@ -1919,6 +2015,7 @@ test('Expect Start workspace as-is button disabled when no model available', asy
   vi.mocked(window.checkAgentWorkspaceConfigExists).mockResolvedValue(true);
 
   render(AgentWorkspaceCreate);
+  await openStep('Folders');
 
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/existing-project' },
@@ -1945,7 +2042,7 @@ test('Expect startWorkspace passes replaceConfig when configAction is replace an
   });
 
   await fireEvent.click(screen.getByLabelText('Replace existing'));
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1967,7 +2064,7 @@ test('Expect startWorkspace does not pass replaceConfig when configAction is mer
     expect(screen.getByLabelText('Merge with existing')).toBeInTheDocument();
   });
 
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   expect(window.createAgentWorkspace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1981,6 +2078,7 @@ test('Expect draft preserved when startAsIs fails', async () => {
   vi.mocked(window.checkAgentWorkspaceConfigExists).mockResolvedValue(true);
 
   render(AgentWorkspaceCreate);
+  await openStep('Folders');
 
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/existing-project' },
@@ -1990,7 +2088,6 @@ test('Expect draft preserved when startAsIs fails', async () => {
     expect(screen.getByRole('button', { name: 'Start workspace as-is' })).toBeInTheDocument();
   });
 
-  wizard.draft.currentStepIndex = 0;
   await fireEvent.click(screen.getByRole('button', { name: 'Start workspace as-is' }));
 
   expect(wizard.draft.sourcePath).toBe('/home/user/existing-project');
@@ -2005,7 +2102,7 @@ test('Expect draft preserved when startWorkspace fails', async () => {
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/my-repo' },
   });
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   await vi.waitFor(() => {
     expect(window.showMessageBox).toHaveBeenCalledWith(
@@ -2021,7 +2118,7 @@ test('Expect draft preserved when startWorkspace fails', async () => {
   expect(wizard.draft.sessionName).toBe('my-repo');
 });
 
-test('Expect error dialog shown when createAgentWorkspace fails from Start Workspace button', async () => {
+test('Expect error dialog shown when createAgentWorkspace fails from Create workspace button on last step', async () => {
   vi.mocked(window.createAgentWorkspace).mockRejectedValue(new Error('sandbox init failed'));
   vi.mocked(window.showMessageBox).mockResolvedValue({ response: 0 });
 
@@ -2035,7 +2132,7 @@ test('Expect error dialog shown when createAgentWorkspace fails from Start Works
     await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
   }
 
-  await fireEvent.click(screen.getByRole('button', { name: 'Start Workspace' }));
+  await fireEvent.click(createButton());
 
   await vi.waitFor(() => {
     expect(window.showMessageBox).toHaveBeenCalledWith(
@@ -2053,6 +2150,7 @@ test('Expect navigation still called when startAsIs fails', async () => {
   vi.mocked(window.checkAgentWorkspaceConfigExists).mockResolvedValue(true);
 
   render(AgentWorkspaceCreate);
+  await openStep('Folders');
 
   await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
     target: { value: '/home/user/existing-project' },
@@ -2079,14 +2177,14 @@ test('Expect navigation still called when startWorkspace fails', async () => {
     target: { value: '/home/user/my-repo' },
   });
 
-  await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+  await fireEvent.click(createButton());
 
   await vi.waitFor(() => {
     expect(handleNavigation).toHaveBeenCalledWith({ page: 'agent-workspaces' });
   });
 });
 
-const wizardStepCount = 5;
+const wizardStepCount = stepTitles.length;
 
 const sampleProject: WorkspaceProjectInfo = {
   id: 'my-app',
@@ -2110,38 +2208,41 @@ describe('when projects exist', () => {
     setProjects([sampleProject]);
   });
 
-  test('Expect wizard still has five steps when projects exist', () => {
+  test('Expect wizard still has seven steps when projects exist', () => {
     render(AgentWorkspaceCreate);
 
-    expect(screen.getByText(/Step 1 of 5/)).toBeInTheDocument();
+    expect(screen.getByText('1 of 7')).toBeInTheDocument();
   });
 
   test('project handoff shows the selection and preserves edits when project data changes', async () => {
     initializeDraftFromProject(sampleProject);
     render(AgentWorkspaceCreate);
+    await openStep('Folders');
 
     expect(screen.getByRole('option', { name: /My App/ })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByPlaceholderText('/path/to/project')).toHaveValue(sampleProject.folder);
-    await fireEvent.input(screen.getByPlaceholderText('e.g., front-refactor'), { target: { value: 'edited-name' } });
+    await fireEvent.input(nameInput(), { target: { value: 'edited-name' } });
     workspaceProjectsStore.workspaceProjectInfos.set([
       { ...sampleProject, name: 'Updated project', folder: '/updated' },
     ]);
 
     await waitFor(() => expect(screen.getByRole('option', { name: /Updated project/ })).toBeVisible());
-    expect(screen.getByPlaceholderText('e.g., front-refactor')).toHaveValue('edited-name');
+    expect(nameInput()).toHaveValue('edited-name');
     expect(screen.getByPlaceholderText('/path/to/project')).toHaveValue(sampleProject.folder);
     expect(wizard.draft.selectedProjectId).toBe(sampleProject.id);
   });
 
-  test('Expect Saved project accordion visible on workspace step', () => {
+  test('Expect Saved project accordion visible on folders step', async () => {
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     expect(screen.getByRole('button', { name: /Saved project/ })).toBeInTheDocument();
   });
 
   test('Expect project selection cards rendered after expanding accordion', async () => {
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
 
     expect(screen.getByRole('option', { name: /None/ })).toBeInTheDocument();
@@ -2151,6 +2252,7 @@ describe('when projects exist', () => {
   test('Expect selecting a project pre-fills source path', async () => {
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
     await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
 
@@ -2160,18 +2262,20 @@ describe('when projects exist', () => {
   test('Expect selecting a project pre-fills session name', async () => {
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
     await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
 
-    expect((screen.getByPlaceholderText('e.g., front-refactor') as HTMLInputElement).value).toBe('my-app');
+    expect(nameInput().value).toBe('my-app');
   });
 
   test('Expect createAgentWorkspace called with project id', async () => {
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
     await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+    await fireEvent.click(createButton());
 
     expect(window.createAgentWorkspace).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2184,6 +2288,7 @@ describe('when projects exist', () => {
   test('Expect createAgentWorkspace called without project when None selected', async () => {
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
     await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
     await fireEvent.click(screen.getByRole('option', { name: /None/ }));
@@ -2191,7 +2296,7 @@ describe('when projects exist', () => {
     await fireEvent.input(screen.getByPlaceholderText('/path/to/project'), {
       target: { value: '/home/user/other-repo' },
     });
-    await fireEvent.click(screen.getByRole('button', { name: 'Use all defaults and create workspace' }));
+    await fireEvent.click(createButton());
 
     expect(window.createAgentWorkspace).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2203,6 +2308,7 @@ describe('when projects exist', () => {
   test('Expect selecting a project populates draft skill ids', async () => {
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
     await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
 
@@ -2212,6 +2318,7 @@ describe('when projects exist', () => {
   test('Expect selecting a project populates draft MCP ids', async () => {
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
     await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
 
@@ -2221,6 +2328,7 @@ describe('when projects exist', () => {
   test('Expect selecting a project populates draft secret ids', async () => {
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
     await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
 
@@ -2230,6 +2338,7 @@ describe('when projects exist', () => {
   test('Expect selecting a project maps deny network with custom hosts to blocked mode', async () => {
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
     await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
 
@@ -2240,6 +2349,7 @@ describe('when projects exist', () => {
   test('Expect clearing project resets draft fields', async () => {
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
     await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
     expect(wizard.draft.selectedProjectId).toBe('my-app');
@@ -2262,6 +2372,7 @@ describe('when projects exist', () => {
 
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
     await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
     expect(wizard.draft.selectedSkillIds).toEqual(['kubernetes']);
@@ -2288,6 +2399,7 @@ describe('project filesystem mapping', () => {
     setProjects([openNetProject]);
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
     await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
 
@@ -2304,6 +2416,7 @@ describe('project filesystem mapping', () => {
     setProjects([blockedProject]);
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
     await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
 
@@ -2319,6 +2432,7 @@ describe('project filesystem mapping', () => {
     setProjects([registryProject]);
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
     await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
 
@@ -2335,6 +2449,7 @@ describe('project filesystem mapping', () => {
     setProjects([customHostsProject]);
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
     await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
 
@@ -2351,12 +2466,11 @@ describe('project filesystem mapping', () => {
     setProjects([customHostsProject]);
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
     await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
 
-    for (let i = 0; i < 4; i++) {
-      await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-    }
+    await openStep('Reachable hostnames');
 
     expect(screen.getByRole('radio', { name: 'Use Deny All' })).toBeChecked();
     expect(screen.getByRole('radio', { name: 'Use Developer Preset' })).not.toBeChecked();
@@ -2371,12 +2485,11 @@ describe('project filesystem mapping', () => {
     setProjects([registryProject]);
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
     await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
 
-    for (let i = 0; i < 4; i++) {
-      await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-    }
+    await openStep('Reachable hostnames');
 
     expect(screen.getByRole('radio', { name: 'Use Developer Preset' })).toBeChecked();
     expect(screen.getByRole('radio', { name: 'Use Deny All' })).not.toBeChecked();
@@ -2391,6 +2504,7 @@ describe('project filesystem mapping', () => {
     setProjects([homeProject]);
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
     await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
 
@@ -2407,6 +2521,7 @@ describe('project filesystem mapping', () => {
     setProjects([rootProject]);
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
     await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
 
@@ -2426,6 +2541,7 @@ describe('project filesystem mapping', () => {
     setProjects([customProject]);
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
     await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
 
@@ -2442,6 +2558,7 @@ describe('project filesystem mapping', () => {
     setProjects([noMountProject]);
     render(AgentWorkspaceCreate);
 
+    await openStep('Folders');
     await fireEvent.click(screen.getByRole('button', { name: /Saved project/ }));
     await fireEvent.click(screen.getByRole('option', { name: /My App/ }));
 

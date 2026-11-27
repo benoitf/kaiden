@@ -26,6 +26,8 @@ interface Props {
   selectedProjectId?: string;
   onProjectSelect?: (project: WorkspaceProjectInfo | undefined) => void;
   errors?: { name?: string };
+  /** Hide the heading and name field when the name is edited elsewhere (accordion wizard). */
+  embedded?: boolean;
 }
 
 let {
@@ -46,6 +48,7 @@ let {
   selectedProjectId,
   onProjectSelect,
   errors = {},
+  embedded = false,
 }: Props = $props();
 
 function markNameEdited(): void {
@@ -77,10 +80,12 @@ let sessionNameError = $derived(
 let nameInputError = $derived(sessionNameError ?? errors?.name ?? '');
 </script>
 
+{#if !embedded}
 <h2 class="text-lg font-semibold text-[var(--pd-modal-text)] mb-1">Workspace</h2>
 <p class="text-sm text-[var(--pd-content-card-text)] opacity-60 mb-5">
   Point to a local project folder, or leave it empty for a sandbox-only workspace.
 </p>
+{/if}
 
 <div class="space-y-4">
   {#if gateways.length > 1}
@@ -161,6 +166,7 @@ let nameInputError = $derived(sessionNameError ?? errors?.name ?? '');
     </div>
   {/if}
 
+  {#if !embedded}
   <div>
     <label for="workspace-name" class="block text-sm font-semibold text-[var(--pd-modal-text)] mb-2">
       Workspace name
@@ -175,6 +181,7 @@ let nameInputError = $derived(sessionNameError ?? errors?.name ?? '');
       aria-invalid={nameInputError !== ''}
     />
   </div>
+  {/if}
 
   <div class="rounded-xl border border-[var(--pd-content-card-border)]/85 bg-[var(--pd-content-card-bg)]/35 overflow-hidden">
     <button

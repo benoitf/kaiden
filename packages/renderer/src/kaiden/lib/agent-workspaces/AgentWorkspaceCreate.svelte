@@ -1,6 +1,5 @@
 <script lang="ts">
-import { faLock } from '@fortawesome/free-solid-svg-icons';
-import { Button } from '@podman-desktop/ui-svelte';
+import { faPen, faServer, faTerminal } from '@fortawesome/free-solid-svg-icons';
 import { Icon } from '@podman-desktop/ui-svelte/icons';
 import { onMount, untrack } from 'svelte';
 import { toast } from 'svelte-sonner';
@@ -8,6 +7,8 @@ import { toast } from 'svelte-sonner';
 import { getModelId } from '/@/kaiden/lib/models/models-utils';
 import {
   applyProjectToDraft,
+  applyYamlToDraft,
+  draftToYaml,
   resetDraft,
   wizard,
   WORKSPACE_REGISTRY_HOSTS,
@@ -22,9 +23,11 @@ import { ragEnvironments } from '/@/kaiden/stores/rag-environments';
 import { secretVaultInfos } from '/@/kaiden/stores/secret-vault';
 import { skillInfos } from '/@/kaiden/stores/skills';
 import { workspaceProjectInfos } from '/@/kaiden/stores/workspace-projects';
+import IconImage from '/@/lib/appearance/IconImage.svelte';
+import MonacoEditor from '/@/lib/editor/MonacoEditor.svelte';
 import type { ChecklistItem } from '/@/lib/ui/ChecklistPanel.svelte';
+import ChecklistPanel from '/@/lib/ui/ChecklistPanel.svelte';
 import FormPage from '/@/lib/ui/FormPage.svelte';
-import WizardStepper from '/@/lib/ui/WizardStepper.svelte';
 import { handleNavigation } from '/@/navigation';
 import { providerInfos } from '/@/stores/providers';
 import type {
@@ -39,7 +42,9 @@ import type { DefaultWorkspaceSettings } from '/@api/onboarding-settings-info';
 import { isUsableGateway } from '/@api/openshell-gateway-info';
 import type { WorkspaceProjectInfo } from '/@api/workspace-project-info';
 
+import AgentWorkspaceBlueprint from './AgentWorkspaceBlueprint.svelte';
 import AgentWorkspaceCreateStepAgentModel from './AgentWorkspaceCreateStepAgentModel.svelte';
+import AgentWorkspaceCreateStepCard from './AgentWorkspaceCreateStepCard.svelte';
 import type { CustomMount } from './AgentWorkspaceCreateStepFileSystem.svelte';
 import AgentWorkspaceCreateStepFileSystem from './AgentWorkspaceCreateStepFileSystem.svelte';
 import AgentWorkspaceCreateStepNetworking from './AgentWorkspaceCreateStepNetworking.svelte';
@@ -58,12 +63,16 @@ function mapNetworkSelection(value: string, hosts: string[]): NetworkConfigurati
 }
 
 const wizardSteps = [
-  { id: 'workspace', title: 'Workspace' },
-  { id: 'agent-model', title: 'Agent & Model' },
-  { id: 'tools-secrets', title: 'Tools & Secrets' },
-  { id: 'filesystem', title: 'File System' },
-  { id: 'networking', title: 'Networking' },
+  { id: 'image', title: 'Base image' },
+  { id: 'agent', title: 'Agent' },
+  { id: 'model', title: 'Model' },
+  { id: 'addons', title: 'Add-ons' },
+  { id: 'mcp', title: 'MCP servers' },
+  { id: 'folders', title: 'Folders' },
+  { id: 'hostnames', title: 'Reachable hostnames' },
 ];
+// steps after this index have usable defaults, so the workspace can be created without visiting them
+const LAST_REQUIRED_STEP_INDEX = 2;
 
 function clearProject(): void {
   wizard.draft.selectedProjectId = undefined;
@@ -252,7 +261,6 @@ let error = $state('');
 let secretsLoading = $state(false);
 
 let currentStepId = $derived(wizardSteps[wizard.draft.currentStepIndex]?.id ?? '');
-let isLastStep = $derived(wizard.draft.currentStepIndex === wizardSteps.length - 1);
 let hasModel = $derived(wizard.draft.selectedModel !== undefined);
 let validationErrors = $derived.by(() => {
   const errors: { name?: string } = {};
@@ -267,35 +275,99 @@ let validationErrors = $derived.by(() => {
   }
   return errors;
 });
-let isCurrentStepComplete = $derived.by(() => {
-  if (currentStepId === 'workspace') {
-    return (
-      wizard.draft.selectedGateway !== '' &&
-      getEffectiveWorkspaceName() !== '' &&
-      isWorkspaceNameValid() &&
-      !validationErrors.name
-    );
-  }
-  if (currentStepId === 'agent-model') {
-    return hasModel;
-  }
-  if (currentStepId === 'tools-secrets') {
-    return !secretsLoading;
-  }
-  return true;
+let nameError = $derived.by(() => {
+  const name = getEffectiveWorkspaceName();
+  if (!name && !wizard.draft.nameManuallyEdited) return undefined;
+  return getSandboxNameValidationError(name) ?? validationErrors.name;
 });
 
+let createBlocker = $derived.by((): string | undefined => {
+  if (!wizard.draft.selectedGateway) return 'Select a gateway in Folders';
+  if (!getEffectiveWorkspaceName() || !isWorkspaceNameValid() || validationErrors.name)
+    return 'Set a valid workspace name';
+  if (!hasModel) return 'Pick a model';
+  if (secretsLoading) return 'Loading vault secrets…';
+  return undefined;
+});
+
+let readyMessage = $derived(
+  createBlocker ??
+    (currentStepIndex <= LAST_REQUIRED_STEP_INDEX
+      ? `Ready to create now · steps ${LAST_REQUIRED_STEP_INDEX + 2} to ${wizardSteps.length} can stay on defaults`
+      : 'Ready to create now'),
+);
+
+function goToStep(index: number): void {
+  wizard.draft.currentStepIndex = index;
+  wizard.draft.maxVisitedStepIndex = Math.max(wizard.draft.maxVisitedStepIndex, index);
+}
+
 function goNext(): void {
-  if (wizard.draft.currentStepIndex < wizardSteps.length - 1) wizard.draft.currentStepIndex++;
+  if (wizard.draft.currentStepIndex < wizardSteps.length - 1) goToStep(wizard.draft.currentStepIndex + 1);
 }
 
 function goBack(): void {
-  if (wizard.draft.currentStepIndex > 0) wizard.draft.currentStepIndex--;
+  if (wizard.draft.currentStepIndex > 0) goToStep(wizard.draft.currentStepIndex - 1);
 }
 
-function handleStepClick(index: number): void {
-  wizard.draft.currentStepIndex = index;
+function goToStepId(stepId: string): void {
+  const index = wizardSteps.findIndex(step => step.id === stepId);
+  if (index >= 0) {
+    wizard.draft.viewMode = 'visual';
+    goToStep(index);
+  }
 }
+
+function getStepState(index: number): 'done' | 'active' | 'pending' {
+  if (index === currentStepIndex) return 'active';
+  return index <= wizard.draft.maxVisitedStepIndex ? 'done' : 'pending';
+}
+
+// --- YAML view ---
+let yamlContent = $state(wizard.draft.viewMode === 'yaml' ? draftToYaml() : '');
+let yamlError = $state<string | undefined>(undefined);
+
+function setViewMode(mode: 'visual' | 'yaml'): void {
+  if (mode === 'yaml') {
+    yamlContent = draftToYaml();
+    yamlError = undefined;
+  }
+  wizard.draft.viewMode = mode;
+}
+
+function handleYamlChange(event: CustomEvent<string>): void {
+  yamlError = applyYamlToDraft(event.detail, $catalogModels);
+}
+
+function handleKeydown(event: KeyboardEvent): void {
+  if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !createBlocker) {
+    event.preventDefault();
+    startWorkspace();
+  }
+}
+
+function markNameEdited(): void {
+  wizard.draft.nameManuallyEdited = true;
+}
+
+// --- Summaries shown on collapsed steps and in the blueprint ---
+let selectedAgentInfo = $derived($agentInfos.find(a => a.id === wizard.draft.selectedAgent));
+let effectiveImage = $derived(
+  wizard.draft.customImage.trim() !== ''
+    ? wizard.draft.customImage.trim()
+    : (selectedAgentInfo?.baseImage ?? 'Agent default image'),
+);
+let addonCount = $derived(
+  wizard.draft.selectedSkillIds.length +
+    wizard.draft.selectedKnowledgeIds.length +
+    wizard.draft.selectedSecretIds.length,
+);
+let mountedFolders = $derived(
+  wizard.draft.selectedFileAccess === 'custom' ? wizard.draft.customMounts.filter(m => m.host.trim() !== '') : [],
+);
+let folderCount = $derived(mountedFolders.length + (wizard.draft.sourcePath.trim() ? 1 : 0));
+let writableCount = $derived(mountedFolders.filter(m => !m.ro).length + (wizard.draft.sourcePath.trim() ? 1 : 0));
+let allowedHosts = $derived(customHosts.filter(h => h.trim() !== ''));
 
 function addCustomMount(): void {
   wizard.draft.customMounts = [...wizard.draft.customMounts, { host: '', target: '', ro: false }];
@@ -528,51 +600,134 @@ function startWorkspace(): void {
 }
 </script>
 
+
+<svelte:window onkeydown={handleKeydown} />
+
 <FormPage title="Create Agent Workspace">
   {#snippet content()}
     <div class="px-5 pb-5 min-w-full">
-      <div class="bg-[var(--pd-content-card-bg)] py-6">
-        <div class="flex flex-col px-6 max-w-4xl mx-auto space-y-5">
+      <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] gap-6 bg-[var(--pd-content-card-bg)] p-6">
 
-          <!-- Page header -->
-          <div class="mb-2">
-            <span class="text-xs font-semibold uppercase tracking-widest text-[var(--pd-label-primary-text)] bg-[var(--pd-label-primary-bg)] px-2 py-0.5 rounded mb-2 inline-block">
-              Coding Agent
-            </span>
-            <h1 class="text-2xl font-bold text-[var(--pd-modal-text)] mb-1">Create Coding Agent Workspace</h1>
-            <p class="text-sm text-[var(--pd-content-card-text)] opacity-70 max-w-2xl leading-relaxed">
-              Choose a code location or start empty, then configure agent, tools, and sandbox settings.
-            </p>
+        <div class="flex flex-col gap-4 min-w-0">
+          <!-- Header: editable name, progress, view toggle -->
+          <div class="flex flex-wrap items-start justify-between gap-4">
+            <div class="min-w-0">
+              <div class="flex items-center gap-3">
+                <span class="text-3xl font-bold text-[var(--pd-modal-text)]">Configure</span>
+                <input
+                  aria-label="Workspace name"
+                  class="min-w-0 w-80 bg-transparent text-3xl font-bold text-[var(--pd-label-primary-text)] border-b border-dashed border-[var(--pd-label-primary-text)] outline-none"
+                  placeholder="workspace-name"
+                  bind:value={wizard.draft.sessionName}
+                  oninput={markNameEdited}
+                  aria-invalid={nameError !== undefined} />
+                <Icon icon={faPen} size="sm" class="text-[var(--pd-content-card-text)] opacity-70" />
+              </div>
+              {#if nameError}
+                <p class="text-sm text-[var(--pd-input-field-error-text)] mt-1">{nameError}</p>
+              {/if}
+              <p class="flex items-center gap-2 text-sm text-[var(--pd-content-card-text)] opacity-70 mt-2">
+                <Icon icon={faServer} size="xs" />
+                {wizard.draft.selectedGateway ? `OpenShell gateway · ${wizard.draft.selectedGateway}` : 'No gateway selected'}
+              </p>
+            </div>
+
+            <div class="flex items-center gap-4">
+              <div class="flex gap-1" aria-label="Progress">
+                {#each wizardSteps as step, index (step.id)}
+                  <span class="w-7 h-1 rounded-full
+                    {index === currentStepIndex
+                      ? 'bg-[var(--pd-label-primary-text)]'
+                      : getStepState(index) === 'done'
+                        ? 'bg-[var(--pd-label-tertiary-text)]'
+                        : 'bg-[var(--pd-content-card-border)]'}"></span>
+                {/each}
+              </div>
+              <span class="text-sm text-[var(--pd-content-card-text)]">{currentStepIndex + 1} of {wizardSteps.length}</span>
+              <div class="flex rounded-lg border border-[var(--pd-content-card-border)] p-0.5" role="group" aria-label="View mode">
+                {#each [{ id: 'visual', label: 'Visual' }, { id: 'yaml', label: 'YAML' }] as const as mode (mode.id)}
+                  <button
+                    type="button"
+                    aria-pressed={wizard.draft.viewMode === mode.id}
+                    class="px-3 py-1 rounded-md text-sm cursor-pointer
+                      {wizard.draft.viewMode === mode.id
+                        ? 'bg-[var(--pd-content-card-hover-inset-bg)] text-[var(--pd-modal-text)]'
+                        : 'text-[var(--pd-content-card-text)]'}"
+                    onclick={(): void => setViewMode(mode.id)}>{mode.label}</button>
+                {/each}
+              </div>
+            </div>
           </div>
 
-          <!-- Stepper -->
-          <WizardStepper steps={wizardSteps} currentIndex={currentStepIndex} onStepClick={handleStepClick} />
+          {#if wizard.draft.viewMode === 'yaml'}
+            <div class="h-[70vh] rounded-xl border border-[var(--pd-content-card-border)] overflow-hidden">
+              <MonacoEditor content={yamlContent} language="yaml" readOnly={false} on:contentChange={handleYamlChange} />
+            </div>
+            {#if yamlError}
+              <div class="text-sm text-[var(--pd-input-field-error-text)]" role="alert">{yamlError}</div>
+            {/if}
+          {:else}
+            <AgentWorkspaceCreateStepCard
+              index={1}
+              title="Base image"
+              state={getStepState(0)}
+              onOpen={(): void => goToStep(0)}
+              onContinue={goNext}>
+              {#snippet summary()}<span class="font-mono">{effectiveImage}</span>{/snippet}
+              <AgentWorkspaceCreateStepAgentModel section="image" bind:selectedAgent={wizard.draft.selectedAgent} bind:selectedModel={wizard.draft.selectedModel} bind:customImage={wizard.draft.customImage} />
+            </AgentWorkspaceCreateStepCard>
 
-          <!-- Step content -->
-          <div class="rounded-xl border border-[var(--pd-content-card-border)] bg-[var(--pd-content-card-inset-bg)] p-6">
-            {#if currentStepId === 'workspace'}
-              <AgentWorkspaceCreateStepWorkspace
-                bind:sourcePath={wizard.draft.sourcePath}
-                bind:sessionName={wizard.draft.sessionName}
-                gateways={[...reachableGateways]}
-                bind:selectedGateway={wizard.draft.selectedGateway}
-                bind:description={wizard.draft.description}
-                bind:nameManuallyEdited={wizard.draft.nameManuallyEdited}
-                bind:descriptionOpen={wizard.draft.descriptionOpen}
-                bind:projectOpen={wizard.draft.projectOpen}
-                onBrowseSource={handleBrowseSource}
-                configExists={wizard.draft.configExists}
-                bind:configAction={wizard.draft.configAction}
-                onStartAsIs={startAsIs}
-                startAsIsDisabled={!hasModel || wizard.draft.selectedGateway === ''}
-                projects={[...$workspaceProjectInfos]}
-                selectedProjectId={wizard.draft.selectedProjectId}
-                onProjectSelect={handleProjectSelect}
-                errors={validationErrors} />
-            {:else if currentStepId === 'agent-model'}
-              <AgentWorkspaceCreateStepAgentModel bind:selectedAgent={wizard.draft.selectedAgent} bind:selectedModel={wizard.draft.selectedModel} bind:customImage={wizard.draft.customImage} bind:customImageFieldOpen={wizard.draft.customImageFieldOpen} />
-            {:else if currentStepId === 'tools-secrets'}
+            <AgentWorkspaceCreateStepCard
+              index={2}
+              title="Agent"
+              state={getStepState(1)}
+              onOpen={(): void => goToStep(1)}
+              onContinue={goNext}
+              onBack={goBack}>
+              {#snippet summary()}
+                <span class="inline-flex items-center gap-2 text-[var(--pd-modal-text)]">
+                  <IconImage image={selectedAgentInfo?.icon?.logo ?? selectedAgentInfo?.icon?.icon} alt={selectedAgentInfo?.name ?? ''} class="w-5 h-5">
+                    <Icon icon={faTerminal} size="sm" />
+                  </IconImage>
+                  {selectedAgentInfo?.name ?? wizard.draft.selectedAgent}
+                </span>
+              {/snippet}
+              <AgentWorkspaceCreateStepAgentModel section="agent" bind:selectedAgent={wizard.draft.selectedAgent} bind:selectedModel={wizard.draft.selectedModel} bind:customImage={wizard.draft.customImage} />
+            </AgentWorkspaceCreateStepCard>
+
+            <AgentWorkspaceCreateStepCard
+              index={3}
+              title="Model"
+              chip={selectedAgentInfo ? `for ${selectedAgentInfo.name}` : undefined}
+              hint="The list follows the agent you picked"
+              state={getStepState(2)}
+              continueDisabled={!hasModel}
+              onOpen={(): void => goToStep(2)}
+              onContinue={goNext}
+              onBack={goBack}>
+              {#snippet summary()}<span class="text-[var(--pd-modal-text)]">{wizard.draft.selectedModel?.label ?? 'No model selected'}</span>{/snippet}
+              <AgentWorkspaceCreateStepAgentModel section="model" bind:selectedAgent={wizard.draft.selectedAgent} bind:selectedModel={wizard.draft.selectedModel} bind:customImage={wizard.draft.customImage} />
+              <p class="text-sm text-[var(--pd-content-card-text)] opacity-70 mt-3">
+                Model credentials are injected by the gateway and never stored in the sandbox.
+              </p>
+            </AgentWorkspaceCreateStepCard>
+
+            <AgentWorkspaceCreateStepCard
+              index={4}
+              title="Add-ons"
+              badge="Optional"
+              state={getStepState(3)}
+              continueDisabled={secretsLoading}
+              onOpen={(): void => goToStep(3)}
+              onContinue={goNext}
+              onBack={goBack}>
+              {#snippet summary()}
+                {addonCount
+                  ? `${wizard.draft.selectedSkillIds.length} skills · ${wizard.draft.selectedKnowledgeIds.length} knowledges · ${wizard.draft.selectedSecretIds.length} secrets`
+                  : 'None yet · skills, knowledges and vault secrets'}
+              {/snippet}
               <AgentWorkspaceCreateStepToolsSecrets
+                includeMcp={false}
                 {skillItems}
                 gateway={wizard.draft.selectedGateway}
                 bind:selectedSkillIds={wizard.draft.selectedSkillIds}
@@ -582,55 +737,116 @@ function startWorkspace(): void {
                 bind:secretsLoading
                 {knowledgeItems}
                 bind:selectedKnowledgeIds={wizard.draft.selectedKnowledgeIds} />
-            {:else if currentStepId === 'filesystem'}
-              <AgentWorkspaceCreateStepFileSystem
-                bind:selectedFileAccess={wizard.draft.selectedFileAccess}
-                customMounts={wizard.draft.customMounts}
-                onBrowseCustomPath={handleBrowseCustomPath}
-                onAddCustomMount={addCustomMount}
-                onRemoveCustomMount={removeCustomMount}
-                onUpdateCustomMount={updateCustomMount} />
-            {:else if currentStepId === 'networking'}
+            </AgentWorkspaceCreateStepCard>
+
+            <AgentWorkspaceCreateStepCard
+              index={5}
+              title="MCP servers"
+              badge="Optional"
+              state={getStepState(4)}
+              onOpen={(): void => goToStep(4)}
+              onContinue={goNext}
+              onBack={goBack}>
+              {#snippet summary()}
+                {wizard.draft.selectedMcpIds.length
+                  ? `${wizard.draft.selectedMcpIds.length} server${wizard.draft.selectedMcpIds.length === 1 ? '' : 's'}`
+                  : 'None yet · add from the registry'}
+              {/snippet}
+              <ChecklistPanel
+                title="MCP Servers"
+                subtitle="Connect to Model Context Protocol servers for extended capabilities"
+                icon={faServer}
+                items={mcpItems}
+                bind:selected={wizard.draft.selectedMcpIds}
+                emptyMessage="No MCP servers available yet." />
+            </AgentWorkspaceCreateStepCard>
+
+            <AgentWorkspaceCreateStepCard
+              index={6}
+              title="Folders"
+              badge="Default"
+              state={getStepState(5)}
+              onOpen={(): void => goToStep(5)}
+              onContinue={goNext}
+              onBack={goBack}>
+              {#snippet summary()}
+                <span class="font-mono">{wizard.draft.sourcePath.trim() || 'No project folder · sandbox only'}</span>
+                {#if mountedFolders.length}<span> · +{mountedFolders.length} mount{mountedFolders.length === 1 ? '' : 's'}</span>{/if}
+              {/snippet}
+              <div class="flex flex-col gap-6">
+                <AgentWorkspaceCreateStepWorkspace
+                  embedded
+                  bind:sourcePath={wizard.draft.sourcePath}
+                  bind:sessionName={wizard.draft.sessionName}
+                  gateways={[...reachableGateways]}
+                  bind:selectedGateway={wizard.draft.selectedGateway}
+                  bind:description={wizard.draft.description}
+                  bind:nameManuallyEdited={wizard.draft.nameManuallyEdited}
+                  bind:descriptionOpen={wizard.draft.descriptionOpen}
+                  bind:projectOpen={wizard.draft.projectOpen}
+                  onBrowseSource={handleBrowseSource}
+                  configExists={wizard.draft.configExists}
+                  bind:configAction={wizard.draft.configAction}
+                  onStartAsIs={startAsIs}
+                  startAsIsDisabled={!hasModel || wizard.draft.selectedGateway === ''}
+                  projects={[...$workspaceProjectInfos]}
+                  selectedProjectId={wizard.draft.selectedProjectId}
+                  onProjectSelect={handleProjectSelect}
+                  errors={validationErrors} />
+                <AgentWorkspaceCreateStepFileSystem
+                  bind:selectedFileAccess={wizard.draft.selectedFileAccess}
+                  customMounts={wizard.draft.customMounts}
+                  onBrowseCustomPath={handleBrowseCustomPath}
+                  onAddCustomMount={addCustomMount}
+                  onRemoveCustomMount={removeCustomMount}
+                  onUpdateCustomMount={updateCustomMount} />
+              </div>
+            </AgentWorkspaceCreateStepCard>
+
+            <AgentWorkspaceCreateStepCard
+              index={7}
+              title="Reachable hostnames"
+              badge="Default"
+              state={getStepState(6)}
+              onOpen={(): void => goToStep(6)}
+              onBack={goBack}>
+              {#snippet summary()}
+                {#if allowedHosts.length}
+                  <span class="font-mono">{allowedHosts[0]}</span>{#if allowedHosts.length > 1}<span> · +{allowedHosts.length - 1} more</span>{/if}
+                {:else}
+                  Deny all outbound traffic
+                {/if}
+              {/snippet}
               <AgentWorkspaceCreateStepNetworking
                 bind:selectedNetwork={wizard.draft.selectedNetwork}
                 customHosts={customHosts}
                 onAddCustomHost={addCustomHost}
                 onRemoveCustomHost={removeCustomHost}
                 onUpdateCustomHost={updateCustomHost} />
-            {/if}
-          </div>
-
-          {#if error}
-            <div class="text-sm text-red-400 bg-red-900/20 rounded-lg p-3">{error}</div>
+            </AgentWorkspaceCreateStepCard>
           {/if}
 
-          <!-- Footer actions -->
-          <div class="flex items-center justify-between pt-4 border-t border-[var(--pd-content-card-border)]">
-            <div class="flex items-center gap-3 text-sm text-[var(--pd-content-card-text)] opacity-70">
-              <Icon icon={faLock} size="sm" class="text-green-400" />
-              <span>Step {currentStepIndex + 1} of {wizardSteps.length} · Workspace will run in a secured sandbox environment</span>
-            </div>
-            <div class="flex flex-wrap items-center justify-end gap-3">
-              {#if currentStepIndex > 0}
-                <Button onclick={goBack}>Back</Button>
-              {/if}
-              <Button onclick={cancel}>Cancel</Button>
-              {#if currentStepId === 'workspace'}
-                <Button type="secondary" disabled={!isCurrentStepComplete || !hasModel} onclick={startWorkspace}>
-                  Use all defaults and create workspace
-                </Button>
-              {/if}
-              {#if isLastStep}
-                <Button disabled={!hasModel} onclick={startWorkspace}>
-                  Start Workspace
-                </Button>
-              {:else}
-                <Button disabled={!isCurrentStepComplete} onclick={goNext}>Continue</Button>
-              {/if}
-            </div>
-          </div>
-
+          {#if error}
+            <div class="text-sm text-[var(--pd-input-field-error-text)]">{error}</div>
+          {/if}
         </div>
+
+        <AgentWorkspaceBlueprint
+          name={getEffectiveWorkspaceName()}
+          image={effectiveImage}
+          agent={selectedAgentInfo?.name ?? wizard.draft.selectedAgent}
+          model={wizard.draft.selectedModel?.label ?? 'none'}
+          {addonCount}
+          mcpCount={wizard.draft.selectedMcpIds.length}
+          {folderCount}
+          {writableCount}
+          hostCount={allowedHosts.length}
+          activeStepId={wizard.draft.viewMode === 'visual' ? currentStepId : ''}
+          canCreate={createBlocker === undefined}
+          {readyMessage}
+          onSelectStep={goToStepId}
+          onCreate={startWorkspace}
+          onCancel={cancel} />
       </div>
     </div>
   {/snippet}

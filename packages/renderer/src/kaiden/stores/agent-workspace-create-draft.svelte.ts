@@ -17,6 +17,7 @@
  ***********************************************************************/
 
 import { get } from 'svelte/store';
+import { parse, stringify } from 'yaml';
 
 import type { CustomMount } from '/@/kaiden/lib/agent-workspaces/AgentWorkspaceCreateStepFileSystem.svelte';
 import { mcpRemoteServerInfos } from '/@/kaiden/stores/mcp-remote-servers';
@@ -31,6 +32,8 @@ export const WORKSPACE_REGISTRY_HOSTS = ['registry.npmjs.org', 'pypi.python.org'
 
 interface WorkspaceCreateDraft {
   currentStepIndex: number;
+  maxVisitedStepIndex: number;
+  viewMode: 'visual' | 'yaml';
   selectedProjectId: string | undefined;
   selectedGateway: string;
   sourcePath: string;
@@ -59,6 +62,8 @@ interface WorkspaceCreateDraft {
 function createInitialDraft(): WorkspaceCreateDraft {
   return {
     currentStepIndex: 0,
+    maxVisitedStepIndex: 0,
+    viewMode: 'visual',
     selectedProjectId: undefined,
     selectedGateway: '',
     sourcePath: '',
@@ -195,3 +200,98 @@ ragEnvironments.subscribe(envs => {
 window.events?.receive('onboarding:restart', () => {
   wizard.draft.initialized = false;
 });
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(v => typeof v === 'string');
+}
+
+function isMountArray(value: unknown): value is { host: string; target?: string; ro?: boolean }[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      m =>
+        typeof m === 'object' &&
+        m !== null &&
+        typeof m.host === 'string' &&
+        (m.target === undefined || typeof m.target === 'string') &&
+        (m.ro === undefined || typeof m.ro === 'boolean'),
+    )
+  );
+}
+
+/** Serializes the editable part of the draft for the YAML view. */
+export function draftToYaml(): string {
+  const d = wizard.draft;
+  const mounts = d.selectedFileAccess === 'custom' ? d.customMounts.filter(m => m.host.trim() !== '') : [];
+  return stringify({
+    name: d.sessionName,
+    gateway: d.selectedGateway,
+    image: d.customImage || undefined,
+    agent: d.selectedAgent,
+    model: d.selectedModel ? { provider: d.selectedModel.providerId, label: d.selectedModel.label } : undefined,
+    skills: d.selectedSkillIds,
+    knowledge: d.selectedKnowledgeIds,
+    secrets: d.selectedSecretIds,
+    mcp: d.selectedMcpIds,
+    folder: d.sourcePath || undefined,
+    mounts: mounts.map(m => ({ host: m.host, target: m.target, ro: m.ro })),
+    hosts: (d.hostsByMode[d.selectedNetwork] ?? []).filter(h => h.trim() !== ''),
+  });
+}
+
+/**
+ * Applies YAML produced by {@link draftToYaml} (possibly edited) back to the draft.
+ * Returns an error message and leaves the draft untouched when the content is invalid.
+ */
+export function applyYamlToDraft(text: string, models: readonly ModelInfo[]): string | undefined {
+  let doc: unknown;
+  try {
+    doc = parse(text);
+  } catch (err: unknown) {
+    return err instanceof Error ? err.message : String(err);
+  }
+  if (typeof doc !== 'object' || doc === null || Array.isArray(doc)) {
+    return 'The YAML document must be a mapping';
+  }
+  const y: Record<string, unknown> = Object.fromEntries(Object.entries(doc));
+  for (const key of ['name', 'gateway', 'image', 'agent', 'folder']) {
+    if (y[key] !== undefined && typeof y[key] !== 'string') return `"${key}" must be a string`;
+  }
+  for (const key of ['skills', 'knowledge', 'secrets', 'mcp', 'hosts']) {
+    if (y[key] !== undefined && !isStringArray(y[key])) return `"${key}" must be a list of strings`;
+  }
+  if (y.mounts !== undefined && !isMountArray(y.mounts)) {
+    return '"mounts" must be a list of { host, target, ro }';
+  }
+  let model: ModelInfo | undefined;
+  if (y.model !== undefined) {
+    const m = y.model;
+    if (typeof m === 'object' && m !== null && 'provider' in m && 'label' in m) {
+      model = models.find(c => c.providerId === m.provider && c.label === m.label);
+    }
+    if (!model) return '"model" must reference an available { provider, label }';
+  }
+
+  const d = wizard.draft;
+  if (typeof y.name === 'string' && y.name !== d.sessionName) {
+    d.sessionName = y.name;
+    d.nameManuallyEdited = true;
+  }
+  if (typeof y.gateway === 'string') d.selectedGateway = y.gateway;
+  d.customImage = typeof y.image === 'string' ? y.image : '';
+  if (typeof y.agent === 'string') d.selectedAgent = y.agent;
+  if (model) d.selectedModel = model;
+  if (isStringArray(y.skills)) d.selectedSkillIds = y.skills;
+  if (isStringArray(y.knowledge)) d.selectedKnowledgeIds = y.knowledge;
+  if (isStringArray(y.secrets)) d.selectedSecretIds = y.secrets;
+  if (isStringArray(y.mcp)) d.selectedMcpIds = y.mcp;
+  d.sourcePath = typeof y.folder === 'string' ? y.folder : '';
+  if (isMountArray(y.mounts)) {
+    applyFilesystemFromProject({
+      mode: 'custom',
+      mounts: y.mounts.map(m => ({ host: m.host, target: m.target ?? '', ro: m.ro ?? false })),
+    });
+  }
+  if (isStringArray(y.hosts)) applyNetworkFromProject({ mode: 'deny', hosts: y.hosts });
+  return undefined;
+}
